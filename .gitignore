@@ -1,28 +1,29 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-dev-debug.log
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+*.egg
 
-# Dependency directories
-node_modules/
-
-# Environment variables
+# Environment
 .env
 
-# Editor directories and files
-.idea
-.vscode
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
+# Data
+*.db
+
+# OS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
 *.sw?
 
-# OS specific
-.DS_Store
+# YouAgent
 .superpowers/
-.venv/
-__pycache__/
+.taskmaster/
+
+# Logs
+*.log

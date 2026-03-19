@@ -1,0 +1,48 @@
+technology:
+  ai:
+    - regulation
+    - safety
+    - agents
+    - research
+    - machine-learning
+    - nlp
+  quantum:
+    - computing
+    - cryptography
+  software:
+    - open-source
+    - devtools
+    - cloud
+    - security
+  hardware:
+    - semiconductors
+    - robotics
+business:
+  startups:
+    - funding
+    - exits
+    - accelerators
+  markets:
+    - crypto
+    - equities
+    - commodities
+  strategy:
+    - growth
+    - pricing
+science:
+  biology:
+    - genomics
+    - neuroscience
+  physics:
+    - particle
+    - condensed-matter
+  climate:
+    - energy
+    - policy
+culture:
+  media:
+    - journalism
+    - social-media
+  arts:
+    - music
+    - film

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Briefing {{ briefing.id[:8] }} — YouAgent{% endblock %}
+{% block content %}
+<div class="flex items-center gap-4 mb-6">
+  <a href="/briefings" class="text-slate-400 hover:text-white">&larr; All Briefings</a>
+  <h2 class="text-2xl font-bold">Briefing {{ briefing.id[:8] }}</h2>
+</div>
+
+<div class="flex gap-4 text-sm text-slate-400 mb-6">
+  <span>{{ briefing.created_at }}</span>
+  <span>{{ briefing.entry_count }} entries</span>
+  <span>{{ briefing.provider }}</span>
+</div>
+
+{% set section_colors = {
+  "executive_summary": "cyan",
+  "key_developments": "green",
+  "emerging_trends": "yellow",
+  "contradictions": "red",
+  "action_items": "purple"
+} %}
+
+<div class="space-y-6">
+  {% for section in briefing.sections %}
+  {% set color = section_colors.get(section.kind, "slate") %}
+  <div class="bg-slate-800 rounded-lg border border-{{ color }}-800 overflow-hidden">
+    <div class="px-5 py-3 bg-{{ color }}-900/30 border-b border-{{ color }}-800">
+      <h3 class="font-semibold text-{{ color }}-300">{{ section.title }}</h3>
+    </div>
+    <div class="px-5 py-4 text-slate-300 prose prose-invert prose-sm max-w-none">
+      {{ section.content }}
+    </div>
+    {% if section.source_refs %}
+    <div class="px-5 py-3 border-t border-slate-700">
+      <p class="text-xs text-slate-500 mb-1">Sources:</p>
+      {% for ref in section.source_refs %}
+      <a href="{{ ref }}" target="_blank" class="text-xs text-cyan-400 hover:underline block truncate">{{ ref }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

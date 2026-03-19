@@ -12,6 +12,12 @@ class YouAgentSettings(BaseModel):
     home_dir: Path = YOUAGENT_HOME
     config_file: Path = CONFIG_FILE
 
+    # LLM settings for synthesis
+    llm_provider: Optional[str] = None  # "claude" or "openai"
+    llm_api_key: Optional[str] = None
+    llm_model: Optional[str] = None
+    synthesis_cadence: str = "6h"
+
     @classmethod
     def load(cls) -> "YouAgentSettings":
         if CONFIG_FILE.exists():

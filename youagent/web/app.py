@@ -12,7 +12,7 @@ from youagent.a2a.server import create_a2a_app
 from youagent.knowledge.store import KnowledgeStore
 from youagent.models.agent import Agent
 from youagent.search.client import YouSearchClient
-from youagent.web.routes import agents, dashboard, feed, interests, network, search
+from youagent.web.routes import agents, briefings, dashboard, feed, interests, network, search
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -46,6 +46,7 @@ def create_web_app(
     # Include web routes
     app.include_router(dashboard.router)
     app.include_router(agents.router)
+    app.include_router(briefings.router)
     app.include_router(feed.router)
     app.include_router(interests.router)
     app.include_router(network.router)

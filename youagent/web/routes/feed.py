@@ -1,5 +1,10 @@
+import uuid
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
+
+from youagent.feed.ranker import TimelineRanker
 
 router = APIRouter(prefix="/feed")
 
@@ -10,7 +15,14 @@ async def feed_page(request: Request):
     topic = request.query_params.get("topic", "")
     unread = request.query_params.get("unread", "") == "true"
 
-    items = await store.get_feed(topic=topic or None, unread_only=unread, limit=20)
+    items = await store.get_feed(topic=topic or None, unread_only=unread, limit=50)
+
+    # Apply timeline ranking
+    agent = getattr(request.app.state, "agent", None)
+    if agent:
+        ranker = TimelineRanker(store)
+        items = await ranker.rank(items, agent.id)
+    items = items[:20]
 
     # Gather unique topics for filter
     all_feed = await store.get_feed(limit=500)
@@ -23,7 +35,7 @@ async def feed_page(request: Request):
         "items": [
             {"id": f.id, "headline": f.headline, "body": f.body,
              "topic_path": f.topic_path, "created_at": str(f.created_at),
-             "read": f.read}
+             "read": f.read, "source_origin": f.source_origin}
             for f in items
         ],
         "topics": topics,
@@ -52,7 +64,7 @@ async def feed_items_partial(request: Request):
         "items": [
             {"id": f.id, "headline": f.headline, "body": f.body,
              "topic_path": f.topic_path, "created_at": str(f.created_at),
-             "read": f.read}
+             "read": f.read, "source_origin": f.source_origin}
             for f in items
         ],
         "has_more": len(items) == 20,
@@ -66,4 +78,32 @@ async def feed_items_partial(request: Request):
 async def mark_read(request: Request, item_id: str):
     store = request.app.state.store
     await store.mark_read(item_id)
+    return HTMLResponse("")
+
+
+@router.post("/{item_id}/engage")
+async def engage(request: Request, item_id: str):
+    """Record an engagement event for timeline ranking."""
+    store = request.app.state.store
+    agent = getattr(request.app.state, "agent", None)
+    if not agent:
+        return HTMLResponse("")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    event_type = body.get("event_type", "click")
+    metadata = body.get("metadata", {})
+
+    event = {
+        "id": str(uuid.uuid4()),
+        "agent_id": agent.id,
+        "feed_item_id": item_id,
+        "event_type": event_type,
+        "metadata": metadata,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await store.save_engagement(event)
     return HTMLResponse("")

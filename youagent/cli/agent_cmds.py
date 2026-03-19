@@ -28,11 +28,68 @@ async def _create_agent(name: str, description: str, interests: list[str]) -> Ag
 
 @agent_app.command("create")
 def create(
-    name: str = typer.Option(..., "--name", "-n", help="Agent name"),
+    name: str = typer.Option(None, "--name", "-n", help="Agent name"),
     description: str = typer.Option("", "--description", "-d", help="Agent description"),
     interests: str = typer.Option("", "--interests", "-i", help="Comma-separated taxonomy paths"),
+    guided: bool = typer.Option(False, "--guided", "-g", help="Use conversational onboarding"),
 ):
     """Create a new agent."""
+    if guided or not name:
+        # Conversational onboarding flow
+        from rich.panel import Panel
+        from rich.table import Table
+
+        from youagent.config.settings import YouAgentSettings
+        from youagent.synthesis.llm_client import create_llm_client
+
+        settings = YouAgentSettings.load()
+        llm_client = create_llm_client(settings)
+
+        if not llm_client:
+            if not name:
+                console.print("[red]No LLM configured. Use --name and --interests flags, or run 'youagent init'.[/red]")
+                raise typer.Exit(1)
+        else:
+            console.print("[bold cyan]Describe what you want this agent to monitor:[/bold cyan]")
+            user_text = typer.prompt("Your interests")
+
+            from youagent.onboarding.parser import OnboardingParser
+            from youagent.taxonomy.loader import load_taxonomy
+
+            taxonomy = load_taxonomy()
+            parser = OnboardingParser(taxonomy)
+
+            async def _parse():
+                try:
+                    return await parser.parse(user_text, llm_client)
+                finally:
+                    await llm_client.close()
+
+            result = asyncio.run(_parse())
+
+            console.print(Panel(
+                f"[bold]{result.agent_name}[/bold]\n{result.agent_description}",
+                title="Proposed Agent",
+            ))
+            table = Table(title="Interests")
+            table.add_column("Path", style="cyan")
+            table.add_column("Queries")
+            table.add_column("Cadence")
+            for oi in result.interests:
+                table.add_row(oi.path, ", ".join(oi.queries[:2]), oi.cadence)
+            console.print(table)
+
+            if not typer.confirm("Create this agent?", default=True):
+                return
+
+            from youagent.models.interest import Interest as InterestModel
+            agent = asyncio.run(_create_agent(
+                result.agent_name, result.agent_description,
+                [oi.path for oi in result.interests],
+            ))
+            console.print(f"[green]Created agent:[/green] {agent.name} (ID: {agent.id[:8]}...)")
+            return
+
     interest_list = [i.strip() for i in interests.split(",") if i.strip()] if interests else []
     agent = asyncio.run(_create_agent(name, description or f"Agent: {name}", interest_list))
     console.print(f"[green]Created agent:[/green] {agent.name} (ID: {agent.id[:8]}...)")

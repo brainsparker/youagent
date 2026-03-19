@@ -1,7 +1,7 @@
 import json
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from youagent.a2a.agent_card import generate_agent_card
 from youagent.models.agent import Agent
@@ -51,6 +51,48 @@ async def create_agent(
     for i in agent.card.x_youagent.interests:
         await store.save_interest(agent.id, i)
     return RedirectResponse(f"/agents/{agent.id}", status_code=303)
+
+
+@router.post("/onboard", response_class=JSONResponse)
+async def onboard_agent(request: Request):
+    """Parse free text into agent config via LLM. Returns JSON for preview."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    text = body.get("text", "").strip()
+    if not text:
+        return JSONResponse({"error": "No text provided"}, status_code=400)
+
+    try:
+        from youagent.config.settings import YouAgentSettings
+        from youagent.onboarding.parser import OnboardingParser
+        from youagent.synthesis.llm_client import create_llm_client
+        from youagent.taxonomy.loader import load_taxonomy
+
+        settings = YouAgentSettings.load()
+        llm_client = create_llm_client(settings)
+        if not llm_client:
+            return JSONResponse({"error": "No LLM configured"}, status_code=503)
+
+        taxonomy = load_taxonomy()
+        parser = OnboardingParser(taxonomy)
+        try:
+            result = await parser.parse(text, llm_client)
+        finally:
+            await llm_client.close()
+
+        return JSONResponse({
+            "agent_name": result.agent_name,
+            "agent_description": result.agent_description,
+            "interests": [
+                {"path": i.path, "queries": i.queries, "cadence": i.cadence, "priority": i.priority}
+                for i in result.interests
+            ],
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @router.get("/{agent_id}", response_class=HTMLResponse)

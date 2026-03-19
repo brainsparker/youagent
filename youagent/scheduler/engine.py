@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import signal
 from pathlib import Path
@@ -8,17 +9,24 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from youagent.knowledge.store import KnowledgeStore
 from youagent.models.interest import Interest
-from youagent.scheduler.jobs import run_search_for_interest
+from youagent.scheduler.jobs import run_entity_extraction, run_network_poll, run_search_for_interest, run_synthesis_for_agent
 from youagent.search.client import YouSearchClient
+from youagent.synthesis.engine import SynthesisEngine
+from youagent.synthesis.llm_client import create_llm_client
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulerEngine:
-    def __init__(self, api_key: str, db_path: Path) -> None:
+    def __init__(self, api_key: str, db_path: Path, settings=None) -> None:
         self.api_key = api_key
         self.db_path = Path(db_path)
+        self._settings = settings
         self._scheduler = AsyncIOScheduler()
         self._store: Optional[KnowledgeStore] = None
         self._client: Optional[YouSearchClient] = None
+        self._synthesis_engine: Optional[SynthesisEngine] = None
+        self._a2a_client = None
 
     def _parse_cadence(self, cadence: str) -> dict:
         match = re.match(r"^(\d+)([hmd])$", cadence)
@@ -37,6 +45,16 @@ class SchedulerEngine:
         await self._store.initialize()
         self._client = YouSearchClient(api_key=self.api_key)
 
+        # Set up synthesis engine if LLM credentials available
+        llm_client = create_llm_client(self._settings)
+        if not llm_client:
+            logger.info("No LLM credentials found — synthesis disabled")
+        self._synthesis_engine = SynthesisEngine(self._store, llm_client)
+
+        # Set up A2A client for network polling
+        from youagent.a2a.client import A2AClient
+        self._a2a_client = A2AClient()
+
     async def add_agent_jobs(self, agent_id: str) -> int:
         interests = await self._store.list_interests(agent_id)
         for interest in interests:
@@ -49,10 +67,51 @@ class SchedulerEngine:
                 replace_existing=True,
                 **interval,
             )
+
+        # Add synthesis job if engine available
+        if self._synthesis_engine and self._synthesis_engine.llm_client:
+            cadence = "6h"
+            if self._settings and hasattr(self._settings, "synthesis_cadence"):
+                cadence = self._settings.synthesis_cadence
+            interval = self._parse_cadence(cadence)
+            self._scheduler.add_job(
+                self._run_synthesis,
+                "interval",
+                kwargs={"agent_id": agent_id},
+                id=f"{agent_id}:synthesis",
+                replace_existing=True,
+                **interval,
+            )
+
+        # Add network polling jobs for subscriptions
+        subscriptions = await self._store.get_subscriptions(agent_id)
+        for sub in subscriptions:
+            interval = self._parse_cadence(sub.get("cadence", "6h"))
+            self._scheduler.add_job(
+                self._run_network_poll,
+                "interval",
+                kwargs={"subscription": sub},
+                id=f"{agent_id}:network:{sub['id']}",
+                replace_existing=True,
+                **interval,
+            )
+
         return len(interests)
 
     async def _run_job(self, agent_id: str, interest: Interest) -> None:
-        await run_search_for_interest(agent_id, interest, self._client, self._store)
+        count = await run_search_for_interest(agent_id, interest, self._client, self._store)
+
+        # Run entity extraction on new entries if LLM is available
+        if count > 0 and self._synthesis_engine and self._synthesis_engine.llm_client:
+            entries = await self._store.get_entries(agent_id, limit=count)
+            for entry in entries:
+                await run_entity_extraction(entry, self._store, self._synthesis_engine.llm_client)
+
+    async def _run_synthesis(self, agent_id: str) -> None:
+        await run_synthesis_for_agent(agent_id, self._synthesis_engine)
+
+    async def _run_network_poll(self, subscription: dict) -> None:
+        await run_network_poll(subscription, self._store, self._a2a_client)
 
     async def start(self) -> None:
         await self.setup()
@@ -77,6 +136,10 @@ class SchedulerEngine:
 
     async def shutdown(self) -> None:
         self._scheduler.shutdown(wait=False)
+        if self._synthesis_engine and self._synthesis_engine.llm_client:
+            await self._synthesis_engine.llm_client.close()
+        if self._a2a_client:
+            await self._a2a_client.close()
         if self._client:
             await self._client.close()
         if self._store:

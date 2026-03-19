@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
@@ -9,14 +11,22 @@ router = APIRouter(prefix="/network")
 
 @router.get("", response_class=HTMLResponse)
 async def network_page(request: Request):
+    store = request.app.state.store
     registry = request.app.state.registry
     agents = registry.list_agents() if registry else []
+    agent = getattr(request.app.state, "agent", None)
+
+    # Get subscriptions (following list)
+    subscriptions = []
+    if agent:
+        subscriptions = await store.get_subscriptions(agent.id, active_only=False)
 
     return request.app.state.templates.TemplateResponse("network/index.html", {
         "request": request,
         "active": "network",
         "version": "0.1.0",
         "agents": agents,
+        "subscriptions": subscriptions,
     })
 
 
@@ -39,16 +49,80 @@ async def connect_agent(request: Request, url: str = Form(...)):
           <p class="text-sm text-slate-400 mt-1">{card.description}</p>
           <p class="text-xs text-slate-500 mt-1">{card.endpoint}</p>
           <div class="flex gap-1 mt-2 flex-wrap">{skills_html}</div>
-          <form hx-post="/network/{card.id}/ask" hx-target="#response-{card.id}" class="mt-3 flex gap-2">
-            <input type="text" name="query" placeholder="Ask this agent..."
-              class="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-white">
-            <button type="submit" class="bg-slate-600 hover:bg-slate-500 px-3 py-1 rounded text-sm">Ask</button>
-          </form>
+          <div class="flex gap-2 mt-3">
+            <form hx-post="/network/follow" hx-target="#follow-result-{card.id}" class="inline">
+              <input type="hidden" name="url" value="{url}">
+              <input type="hidden" name="agent_id" value="{card.id}">
+              <input type="hidden" name="endpoint" value="{card.endpoint}">
+              <input type="hidden" name="name" value="{card.name}">
+              <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 px-3 py-1 rounded text-sm text-white">Follow</button>
+            </form>
+            <form hx-post="/network/{card.id}/ask" hx-target="#response-{card.id}" class="flex gap-2 flex-1">
+              <input type="text" name="query" placeholder="Ask this agent..."
+                class="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-white">
+              <button type="submit" class="bg-slate-600 hover:bg-slate-500 px-3 py-1 rounded text-sm">Ask</button>
+            </form>
+          </div>
+          <div id="follow-result-{card.id}" class="mt-2"></div>
           <div id="response-{card.id}" class="mt-2"></div>
         </div>
         """)
     except Exception as e:
         return HTMLResponse(f"<p class='text-red-400'>Failed to connect: {e}</p>")
+
+
+@router.post("/follow", response_class=HTMLResponse)
+async def follow_agent(
+    request: Request,
+    url: str = Form(...),
+    agent_id: str = Form(...),
+    endpoint: str = Form(...),
+    name: str = Form(""),
+):
+    """Follow a remote agent."""
+    store = request.app.state.store
+    agent = getattr(request.app.state, "agent", None)
+    if not agent:
+        return HTMLResponse('<p class="text-red-400">No local agent configured.</p>')
+
+    # Check if already following
+    subs = await store.get_subscriptions(agent.id, active_only=False)
+    for sub in subs:
+        if sub["remote_agent_id"] == agent_id:
+            if not sub["active"]:
+                await store.set_subscription_active(sub["id"], True)
+                return HTMLResponse(f'<p class="text-green-400">Re-activated follow for {name}</p>')
+            return HTMLResponse(f'<p class="text-yellow-400">Already following {name}</p>')
+
+    sub = {
+        "id": str(uuid.uuid4()),
+        "agent_id": agent.id,
+        "remote_agent_id": agent_id,
+        "remote_endpoint": endpoint,
+        "topics": [],
+        "cadence": "6h",
+        "last_polled": None,
+        "active": 1,
+    }
+    await store.save_subscription(sub)
+    return HTMLResponse(f'<p class="text-green-400">Now following {name}! Posts will appear in your timeline.</p>')
+
+
+@router.post("/unfollow/{remote_agent_id}", response_class=HTMLResponse)
+async def unfollow_agent(request: Request, remote_agent_id: str):
+    """Unfollow a remote agent."""
+    store = request.app.state.store
+    agent = getattr(request.app.state, "agent", None)
+    if not agent:
+        return HTMLResponse("")
+
+    subs = await store.get_subscriptions(agent.id, active_only=False)
+    for sub in subs:
+        if sub["remote_agent_id"] == remote_agent_id:
+            await store.set_subscription_active(sub["id"], False)
+            return HTMLResponse('<p class="text-red-400">Unfollowed.</p>')
+
+    return HTMLResponse('<p class="text-yellow-400">Not following this agent.</p>')
 
 
 @router.post("/{agent_id}/ask", response_class=HTMLResponse)

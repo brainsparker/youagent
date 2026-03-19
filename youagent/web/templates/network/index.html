@@ -3,14 +3,38 @@
 {% block content %}
 <h2 class="text-2xl font-bold mb-6">Agent Network</h2>
 
-<!-- Connect form -->
+<!-- Connect/Discover form -->
 <form hx-post="/network/connect" hx-target="#agents-list" hx-swap="beforeend"
   class="flex gap-2 mb-6">
   <input type="text" name="url" placeholder="http://localhost:8001" required
     class="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white">
-  <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded text-white text-sm">Connect</button>
+  <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded text-white text-sm">Discover & Follow</button>
 </form>
 
+<!-- Following -->
+{% if subscriptions %}
+<h3 class="text-lg font-semibold mb-3">Following</h3>
+<div class="space-y-2 mb-8">
+  {% for sub in subscriptions %}
+  <div class="bg-slate-800 rounded-lg p-3 border border-slate-700 flex justify-between items-center">
+    <div>
+      <span class="text-white font-medium">{{ sub.remote_agent_id[:8] }}...</span>
+      <span class="text-xs text-slate-500 ml-2">{{ sub.remote_endpoint }}</span>
+      <span class="text-xs text-slate-500 ml-2">every {{ sub.cadence }}</span>
+      {% if not sub.active %}
+      <span class="text-xs text-red-400 ml-2">(inactive)</span>
+      {% endif %}
+    </div>
+    <form hx-post="/network/unfollow/{{ sub.remote_agent_id }}" hx-target="closest div" hx-swap="outerHTML">
+      <button class="text-xs text-red-400 hover:text-red-300">Unfollow</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- Discovered Agents -->
+<h3 class="text-lg font-semibold mb-3">Discovered Agents</h3>
 <div id="agents-list" class="grid grid-cols-2 gap-4">
   {% for card in agents %}
   <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
@@ -35,7 +59,7 @@
   </div>
   {% endfor %}
   {% if not agents %}
-  <p class="text-slate-500 col-span-2">No connected agents. Enter a URL above to connect.</p>
+  <p class="text-slate-500 col-span-2">No connected agents. Enter a URL above to discover and follow.</p>
   {% endif %}
 </div>
 {% endblock %}

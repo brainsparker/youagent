@@ -129,6 +129,138 @@ def list_agents():
     console.print(table)
 
 
+@a2a_app.command("follow")
+def follow(url: str):
+    """Follow a remote agent to receive their posts in your timeline."""
+    import uuid
+
+    from youagent.a2a.client import A2AClient
+    from youagent.a2a.registry import AgentRegistry
+    from youagent.knowledge.store import KnowledgeStore
+
+    registry_path = YOUAGENT_HOME / "registry.json"
+
+    async def _follow():
+        client = A2AClient()
+        store = KnowledgeStore(DB_PATH)
+        await store.initialize()
+
+        try:
+            card = await client.discover(url)
+        except Exception as e:
+            console.print(f"[red]Failed to discover agent at {url}: {e}[/red]")
+            raise typer.Exit(1)
+
+        # Register in registry
+        registry = AgentRegistry(registry_path=registry_path)
+        registry.register(card)
+
+        # Get local agent
+        agents = await store.list_agents()
+        if not agents:
+            console.print("[red]No local agent. Run 'youagent init' first.[/red]")
+            raise typer.Exit(1)
+        local_agent = agents[0]
+
+        # Check if already following
+        subs = await store.get_subscriptions(local_agent.id, active_only=False)
+        for sub in subs:
+            if sub["remote_agent_id"] == card.id:
+                if not sub["active"]:
+                    await store.set_subscription_active(sub["id"], True)
+                    console.print(f"[green]Re-activated follow:[/green] {card.name}")
+                else:
+                    console.print(f"[yellow]Already following:[/yellow] {card.name}")
+                return
+
+        # Create subscription
+        sub = {
+            "id": str(uuid.uuid4()),
+            "agent_id": local_agent.id,
+            "remote_agent_id": card.id,
+            "remote_endpoint": card.endpoint,
+            "topics": [],
+            "cadence": "6h",
+            "last_polled": None,
+            "active": 1,
+        }
+        await store.save_subscription(sub)
+        console.print(f"[green]Now following:[/green] {card.name} ({card.id[:8]}...)")
+        console.print(f"[dim]Polling every 6h from {card.endpoint}[/dim]")
+
+        await client.close()
+        await store.close()
+
+    asyncio.run(_follow())
+
+
+@a2a_app.command("unfollow")
+def unfollow(agent_id: str):
+    """Stop following a remote agent."""
+    from youagent.knowledge.store import KnowledgeStore
+
+    async def _unfollow():
+        store = KnowledgeStore(DB_PATH)
+        await store.initialize()
+
+        agents = await store.list_agents()
+        if not agents:
+            return False
+        local_agent = agents[0]
+
+        subs = await store.get_subscriptions(local_agent.id, active_only=False)
+        for sub in subs:
+            if sub["remote_agent_id"].startswith(agent_id):
+                await store.set_subscription_active(sub["id"], False)
+                await store.close()
+                return sub["remote_agent_id"]
+        await store.close()
+        return None
+
+    result = asyncio.run(_unfollow())
+    if result:
+        console.print(f"[red]Unfollowed:[/red] {result[:8]}...")
+    else:
+        console.print(f"[yellow]Subscription not found for: {agent_id}[/yellow]")
+
+
+@a2a_app.command("following")
+def following():
+    """List agents you are following."""
+    from youagent.knowledge.store import KnowledgeStore
+
+    async def _following():
+        store = KnowledgeStore(DB_PATH)
+        await store.initialize()
+        agents = await store.list_agents()
+        if not agents:
+            return []
+        subs = await store.get_subscriptions(agents[0].id, active_only=False)
+        await store.close()
+        return subs
+
+    subs = asyncio.run(_following())
+    if not subs:
+        typer.echo("Not following any agents. Use 'youagent a2a follow <url>' to follow one.")
+        return
+
+    table = Table(title="Following")
+    table.add_column("Agent ID", style="cyan", max_width=12)
+    table.add_column("Endpoint")
+    table.add_column("Cadence", style="green")
+    table.add_column("Last Polled")
+    table.add_column("Active")
+    for sub in subs:
+        table.add_row(
+            sub["remote_agent_id"][:8] + "...",
+            sub["remote_endpoint"],
+            sub["cadence"],
+            (sub["last_polled"] or "never")[:19],
+            "[green]yes[/green]" if sub["active"] else "[red]no[/red]",
+        )
+    console.print(table)
+
+
 @a2a_app.command("ask")
 def ask(agent_id: str, query: str):
     """Send a message to a remote agent via A2A."""

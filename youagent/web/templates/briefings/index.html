@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Briefings — YouAgent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-bold mb-6">Intelligence Briefings</h2>
+
+{% if briefings %}
+<div class="space-y-4">
+  {% for b in briefings %}
+  <a href="/briefings/{{ b.id }}" class="block bg-slate-800 rounded-lg p-5 border border-slate-700 hover:border-cyan-600 transition-colors">
+    <div class="flex justify-between items-start mb-2">
+      <h3 class="font-semibold text-white">Briefing {{ b.id[:8] }}</h3>
+      <span class="text-xs text-slate-500">{{ b.created_at }}</span>
+    </div>
+    <p class="text-slate-400 text-sm mb-2">{{ b.summary[:300] }}{% if b.summary|length > 300 %}...{% endif %}</p>
+    <div class="flex gap-4 text-xs text-slate-500">
+      <span>{{ b.entry_count }} entries synthesized</span>
+      <span>{{ b.provider }}</span>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-slate-500">No briefings yet. Generate one from the CLI: <code class="bg-slate-800 px-2 py-1 rounded">youagent briefing --generate</code></p>
+{% endif %}
+{% endblock %}

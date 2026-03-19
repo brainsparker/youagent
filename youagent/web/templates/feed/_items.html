@@ -2,16 +2,29 @@
 <div class="space-y-3">
   {% for item in items %}
   <div class="feed-item {% if item.read %}read{% endif %} bg-slate-800 rounded-lg p-4 border border-slate-700"
-    {% if not item.read %}hx-patch="/feed/{{ item.id }}/read" hx-swap="none"{% endif %}>
+    {% if not item.read %}hx-patch="/feed/{{ item.id }}/read" hx-swap="none"{% endif %}
+    onclick="fetch('/feed/{{ item.id }}/engage', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({event_type:'click', metadata:{source_origin:'{{ item.source_origin }}', topic_path:'{{ item.topic_path }}'}})})"
+    style="cursor:pointer">
     <div class="flex justify-between items-start">
       <h4 class="font-semibold text-white flex items-center gap-2">
         {% if not item.read %}<span class="w-2 h-2 bg-cyan-400 rounded-full inline-block"></span>{% endif %}
         {{ item.headline }}
       </h4>
-      <span class="tag bg-cyan-900 text-cyan-300">{{ item.topic_path }}</span>
+      <div class="flex gap-1 flex-shrink-0">
+        {% if item.source_origin == "network" %}
+        <span class="tag bg-purple-900 text-purple-300 text-xs px-2 py-0.5 rounded">NETWORK</span>
+        {% elif item.source_origin == "synthesis" %}
+        <span class="tag bg-amber-900 text-amber-300 text-xs px-2 py-0.5 rounded">SYNTHESIS</span>
+        {% endif %}
+        <span class="tag bg-cyan-900 text-cyan-300 text-xs px-2 py-0.5 rounded">{{ item.topic_path }}</span>
+      </div>
     </div>
     <p class="text-slate-400 text-sm mt-2">{{ item.body }}</p>
-    <p class="text-xs text-slate-500 mt-2">{{ item.created_at[:19] }}</p>
+    <div class="flex justify-between items-center mt-2">
+      <p class="text-xs text-slate-500">{{ item.created_at[:19] }}</p>
+      <button onclick="event.stopPropagation(); fetch('/feed/{{ item.id }}/engage', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({event_type:'dismiss'})}); this.closest('.feed-item').style.opacity='0.3'"
+        class="text-xs text-slate-600 hover:text-slate-400">dismiss</button>
+    </div>
   </div>
   {% endfor %}
 </div>

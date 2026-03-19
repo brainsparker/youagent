@@ -88,9 +88,17 @@ def create_a2a_app(
         task = await task_manager.get_task(task_id)
         return _task_to_dict(task)
 
+    async def posts_list(params: dict) -> dict:
+        """Return posts since a given timestamp for followers to poll."""
+        since = params.get("since", "2000-01-01T00:00:00")
+        target_agent_id = params.get("agent_id", agent.id)
+        posts = await store.get_posts_since(target_agent_id, since)
+        return {"posts": posts}
+
     dispatcher.register("message/send", message_send)
     dispatcher.register("tasks/get", tasks_get)
     dispatcher.register("tasks/cancel", tasks_cancel)
+    dispatcher.register("posts/list", posts_list)
 
     # --- Routes ---
 

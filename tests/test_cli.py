@@ -13,7 +13,8 @@ class TestCLI:
 
     def test_init_creates_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("YOUAGENT_HOME", str(tmp_path / ".youagent"))
-        result = runner.invoke(app, ["init"], input="test-api-key\n")
+        # New init flow: API key -> LLM provider -> LLM key -> interests (empty = skip)
+        result = runner.invoke(app, ["init"], input="test-api-key\nclaude\ntest-llm-key\n\n")
         assert result.exit_code == 0
         assert (tmp_path / ".youagent" / "config.yaml").exists()
 
@@ -35,7 +36,7 @@ class TestCLIIntegration:
         monkeypatch.setenv("YOUAGENT_HOME", str(home))
 
         # Init
-        result = runner.invoke(app, ["init"], input="test-api-key\n")
+        result = runner.invoke(app, ["init"], input="test-api-key\nclaude\ntest-llm-key\n\n")
         assert result.exit_code == 0
 
         # Create agent

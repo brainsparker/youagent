@@ -10,6 +10,7 @@ from youagent.cli.feed_cmds import feed_app
 from youagent.cli.interest_cmds import interest_app
 from youagent.cli.search_cmds import search_app
 from youagent.cli.taxonomy_cmds import taxonomy_app
+from youagent.cli.a2a_cmds import a2a_app
 
 app = typer.Typer(name="youagent", help="YouAgent - Your personal AI agent on the You.com network")
 app.add_typer(agent_app, name="agent")
@@ -18,6 +19,7 @@ app.add_typer(feed_app, name="feed")
 app.add_typer(interest_app, name="interest")
 app.add_typer(search_app, name="search")
 app.add_typer(taxonomy_app, name="taxonomy")
+app.add_typer(a2a_app, name="a2a")
 
 
 def version_callback(value: bool):

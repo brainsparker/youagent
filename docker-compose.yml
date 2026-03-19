@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  web:
+    build: .
+    ports:
+      - "${YOUAGENT_PORT:-8080}:8080"
+    volumes:
+      - youagent-data:/data/.youagent
+    environment:
+      - YOUAGENT_SECRET_KEY=${YOUAGENT_SECRET_KEY:-change-me-in-production}
+      - YOUAGENT_HOSTED=true
+      - YOUAGENT_SHARED_API_KEY=${YOUAGENT_SHARED_API_KEY:-}
+    restart: unless-stopped
+
+volumes:
+  youagent-data:

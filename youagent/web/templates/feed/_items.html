@@ -1,0 +1,27 @@
+{% if items %}
+<div class="space-y-3">
+  {% for item in items %}
+  <div class="feed-item {% if item.read %}read{% endif %} bg-slate-800 rounded-lg p-4 border border-slate-700"
+    {% if not item.read %}hx-patch="/feed/{{ item.id }}/read" hx-swap="none"{% endif %}>
+    <div class="flex justify-between items-start">
+      <h4 class="font-semibold text-white flex items-center gap-2">
+        {% if not item.read %}<span class="w-2 h-2 bg-cyan-400 rounded-full inline-block"></span>{% endif %}
+        {{ item.headline }}
+      </h4>
+      <span class="tag bg-cyan-900 text-cyan-300">{{ item.topic_path }}</span>
+    </div>
+    <p class="text-slate-400 text-sm mt-2">{{ item.body }}</p>
+    <p class="text-xs text-slate-500 mt-2">{{ item.created_at[:19] }}</p>
+  </div>
+  {% endfor %}
+</div>
+{% if has_more %}
+<button hx-get="/feed/items?offset={{ offset }}&topic={{ topic }}&unread={{ unread }}"
+  hx-target="#feed-items" hx-swap="innerHTML"
+  class="mt-4 w-full bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded py-2 text-sm text-slate-400">
+  Load more
+</button>
+{% endif %}
+{% else %}
+<p class="text-slate-500">No feed items found.</p>
+{% endif %}

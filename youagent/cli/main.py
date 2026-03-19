@@ -70,3 +70,50 @@ def start(
     engine = SchedulerEngine(api_key=settings.youcom_api_key, db_path=db_path)
     typer.echo("Starting scheduler... (Ctrl+C to stop)")
     asyncio.run(engine.run_forever())
+
+
+@app.command()
+def web(
+    port: int = typer.Option(8080, "--port", "-p", help="Port for web dashboard"),
+    agent_id: str = typer.Option(None, "--agent", "-a", help="Agent ID to serve"),
+):
+    """Start the web dashboard."""
+    import asyncio
+
+    import uvicorn
+
+    from youagent.a2a.registry import AgentRegistry
+    from youagent.config.defaults import DB_PATH, YOUAGENT_HOME
+    from youagent.config.settings import YouAgentSettings
+    from youagent.knowledge.store import KnowledgeStore
+    from youagent.search.client import YouSearchClient
+    from youagent.web.app import create_web_app
+
+    settings = YouAgentSettings.load()
+
+    async def _get_agent():
+        store = KnowledgeStore(DB_PATH)
+        await store.initialize()
+        agents = await store.list_agents()
+        if not agents:
+            return None, store
+        if agent_id:
+            agent = next((a for a in agents if a.id.startswith(agent_id)), None)
+        else:
+            agent = agents[0]
+        return agent, store
+
+    agent, store = asyncio.run(_get_agent())
+    if not agent:
+        typer.echo("No agent found. Create one with 'youagent agent create'.", err=True)
+        raise typer.Exit(1)
+
+    search_client = None
+    if settings.youcom_api_key:
+        search_client = YouSearchClient(api_key=settings.youcom_api_key)
+
+    registry = AgentRegistry(registry_path=YOUAGENT_HOME / "registry.json")
+
+    web_app = create_web_app(agent, store, search_client, registry, port=port)
+    typer.echo(f"Starting web dashboard at http://localhost:{port}")
+    uvicorn.run(web_app, host="0.0.0.0", port=port, log_level="info")

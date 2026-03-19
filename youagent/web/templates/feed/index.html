@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Feed — YouAgent{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+  <h2 class="text-2xl font-bold">Intelligence Feed</h2>
+  <div class="flex gap-2">
+    <select hx-get="/feed/items" hx-target="#feed-items" hx-include="[name='topic']"
+      name="topic" class="bg-slate-800 border border-slate-600 rounded px-3 py-1 text-sm">
+      <option value="">All topics</option>
+      {% for path in topics %}
+      <option value="{{ path }}" {% if topic == path %}selected{% endif %}>{{ path }}</option>
+      {% endfor %}
+    </select>
+    <label class="flex items-center gap-1 text-sm">
+      <input type="checkbox" name="unread" value="true" {% if unread %}checked{% endif %}
+        hx-get="/feed/items" hx-target="#feed-items" hx-include="[name='topic']">
+      Unread only
+    </label>
+  </div>
+</div>
+
+<div id="feed-items">
+  {% include "feed/_items.html" %}
+</div>
+{% endblock %}

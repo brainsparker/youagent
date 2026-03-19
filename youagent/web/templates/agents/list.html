@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Agents — YouAgent{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+  <h2 class="text-2xl font-bold">Agents</h2>
+  <a href="/agents/new" class="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded text-white text-sm">+ New Agent</a>
+</div>
+
+{% if agents %}
+<div class="grid grid-cols-2 gap-4">
+  {% for agent in agents %}
+  <a href="/agents/{{ agent.id }}" class="bg-slate-800 rounded-lg p-4 border border-slate-700 hover:border-cyan-600 transition">
+    <h3 class="font-semibold text-white">{{ agent.name }}</h3>
+    <p class="text-sm text-slate-400 mt-1">{{ agent.description }}</p>
+    <p class="text-xs text-slate-500 mt-2">ID: {{ agent.id[:8] }}... · Created: {{ agent.created_at[:19] }}</p>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-slate-500">No agents yet. <a href="/agents/new" class="text-cyan-400 hover:underline">Create one</a>.</p>
+{% endif %}
+{% endblock %}

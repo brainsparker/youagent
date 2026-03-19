@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Search — YouAgent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-bold mb-6">Search</h2>
+
+<form hx-post="/search/run" hx-target="#search-results" class="flex gap-2 mb-6">
+  <select name="agent_id" required class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white">
+    <option value="">Select agent</option>
+    {% for agent in agents %}
+    <option value="{{ agent.id }}">{{ agent.name }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 px-6 py-2 rounded text-white">
+    Run Search
+    <span class="htmx-indicator">⏳</span>
+  </button>
+</form>
+
+<div id="search-results">
+  {% include "search/_results.html" %}
+</div>
+{% endblock %}

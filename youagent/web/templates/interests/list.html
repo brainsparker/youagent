@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Interests — YouAgent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-bold mb-6">Interests</h2>
+
+{% if not agents %}
+<p class="text-slate-500">No agents. <a href="/agents/new" class="text-cyan-400 hover:underline">Create one</a> first.</p>
+{% else %}
+{% for agent in agents %}
+<div class="mb-8">
+  <h3 class="text-lg font-semibold mb-3">{{ agent.name }}</h3>
+
+  <div id="interests-{{ agent.id }}" class="space-y-2 mb-4">
+    {% for i in agent._interests %}
+    <div class="bg-slate-800 rounded p-3 border border-slate-700 flex justify-between items-center">
+      <div>
+        <span class="text-cyan-400">{{ i.path }}</span>
+        <span class="text-slate-500 text-sm ml-2">every {{ i.cadence }} · {{ i.priority }}</span>
+      </div>
+      <button hx-delete="/interests/{{ agent.id }}/{{ i.id }}" hx-target="closest div" hx-swap="outerHTML"
+        class="text-red-400 hover:text-red-300 text-sm">Remove</button>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Add interest form -->
+  <form hx-post="/interests/{{ agent.id }}" hx-target="#interests-{{ agent.id }}" hx-swap="beforeend"
+    class="flex gap-2 items-end">
+    <div class="flex-1">
+      <input type="text" name="path" placeholder="technology/ai/regulation" list="taxonomy-paths" required
+        class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm text-white">
+    </div>
+    <select name="cadence" class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm">
+      <option value="6h">6h</option>
+      <option value="12h">12h</option>
+      <option value="24h" selected>24h</option>
+      <option value="1d">1d</option>
+    </select>
+    <select name="priority" class="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm">
+      <option value="high">High</option>
+      <option value="medium" selected>Medium</option>
+      <option value="low">Low</option>
+    </select>
+    <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded text-white text-sm">Add</button>
+  </form>
+</div>
+{% endfor %}
+
+<datalist id="taxonomy-paths">
+  {% for path in taxonomy_paths %}
+  <option value="{{ path }}">
+  {% endfor %}
+</datalist>
+{% endif %}
+{% endblock %}

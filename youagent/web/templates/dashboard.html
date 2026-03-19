@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — YouAgent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-bold mb-6">Dashboard</h2>
+
+<!-- Stats cards -->
+<div class="grid grid-cols-4 gap-4 mb-8" hx-get="/api/stats" hx-trigger="every 30s" hx-swap="innerHTML">
+  <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <p class="text-slate-400 text-sm">Agents</p>
+    <p class="text-3xl font-bold text-white">{{ stats.agents }}</p>
+  </div>
+  <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <p class="text-slate-400 text-sm">Interests</p>
+    <p class="text-3xl font-bold text-white">{{ stats.interests }}</p>
+  </div>
+  <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <p class="text-slate-400 text-sm">Knowledge Entries</p>
+    <p class="text-3xl font-bold text-white">{{ stats.entries }}</p>
+  </div>
+  <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <p class="text-slate-400 text-sm">Unread Feed</p>
+    <p class="text-3xl font-bold text-cyan-400">{{ stats.unread }}</p>
+  </div>
+</div>
+
+<!-- Recent feed -->
+<h3 class="text-lg font-semibold mb-4">Recent Feed</h3>
+{% if recent_feed %}
+<div class="space-y-3">
+  {% for item in recent_feed %}
+  <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <div class="flex justify-between items-start">
+      <h4 class="font-semibold text-white">{{ item.headline }}</h4>
+      <span class="tag bg-cyan-900 text-cyan-300">{{ item.topic_path }}</span>
+    </div>
+    <p class="text-slate-400 text-sm mt-1">{{ item.body[:200] }}{% if item.body|length > 200 %}...{% endif %}</p>
+    <p class="text-xs text-slate-500 mt-2">{{ item.created_at[:19] }}</p>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-slate-500">No feed items yet. Create an agent and run a search.</p>
+{% endif %}
+{% endblock %}

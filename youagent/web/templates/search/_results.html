@@ -1,0 +1,18 @@
+{% if results is defined %}
+<div class="space-y-3">
+  <p class="text-sm text-slate-400 mb-2">Found {{ results|length }} new entries</p>
+  {% for entry in results %}
+  <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+    <h4 class="font-semibold text-white">{{ entry.title }}</h4>
+    <p class="text-sm text-slate-400 mt-1">{{ entry.summary[:300] }}</p>
+    {% if entry.sources %}
+    <div class="mt-2">
+      {% for src in entry.sources %}
+      <a href="{{ src }}" target="_blank" class="text-xs text-cyan-400 hover:underline">{{ src }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}New Agent — YouAgent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-bold mb-6">Create Agent</h2>
+
+<form hx-post="/agents" hx-target="body" class="max-w-lg space-y-4">
+  <div>
+    <label class="block text-sm text-slate-400 mb-1">Name</label>
+    <input type="text" name="name" required
+      class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white focus:border-cyan-500 focus:outline-none">
+  </div>
+  <div>
+    <label class="block text-sm text-slate-400 mb-1">Description</label>
+    <textarea name="description" rows="2"
+      class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white focus:border-cyan-500 focus:outline-none"></textarea>
+  </div>
+  <div>
+    <label class="block text-sm text-slate-400 mb-1">Interests (comma-separated taxonomy paths)</label>
+    <input type="text" name="interests" placeholder="technology/ai/regulation, business/startups/funding"
+      class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white focus:border-cyan-500 focus:outline-none">
+  </div>
+  <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 px-6 py-2 rounded text-white">Create</button>
+</form>
+{% endblock %}

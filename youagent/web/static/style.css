@@ -1,0 +1,5 @@
+.feed-item { transition: opacity 0.2s; }
+.feed-item.read { opacity: 0.6; }
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator { display: inline-block; }
+.tag { font-size: 0.75rem; padding: 2px 8px; border-radius: 9999px; }

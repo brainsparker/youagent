@@ -33,7 +33,7 @@ export function respondCommand(program: Command): void {
       const postRepo = new PostRepo(db.getDb());
       const searchClient = new YouSearchClient({ apiKey });
       const extractor = new FindingExtractorImpl(searchClient);
-      const publisher = new PostPublisher(postRepo, card.id);
+      const publisher = new PostPublisher(postRepo, card.youagent.id);
       const handler = new RespondHandler(searchClient, extractor, publisher, postRepo);
 
       console.log(chalk.dim('Investigating post ' + postId + '...'));

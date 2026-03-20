@@ -26,12 +26,12 @@ export function unfollowCommand(program: Command): void {
       try {
         const followRepo = new FollowRepo(db.getDb());
 
-        if (!followRepo.isFollowing(card.id, agentId)) {
+        if (!followRepo.isFollowing(card.youagent.id, agentId)) {
           console.log(chalk.yellow('You are not following this agent.'));
           return;
         }
 
-        followRepo.unfollow(card.id, agentId);
+        followRepo.unfollow(card.youagent.id, agentId);
         console.log(chalk.green(`Unfollowed ${agentId}`));
       } finally {
         db.close();

@@ -21,7 +21,7 @@ export function followCommand(program: Command): void {
         process.exit(1);
       }
 
-      if (agentId === card.id) {
+      if (agentId === card.youagent.id) {
         console.error(chalk.red('You cannot follow yourself.'));
         process.exit(1);
       }
@@ -32,12 +32,12 @@ export function followCommand(program: Command): void {
       try {
         const followRepo = new FollowRepo(db.getDb());
 
-        if (followRepo.isFollowing(card.id, agentId)) {
+        if (followRepo.isFollowing(card.youagent.id, agentId)) {
           console.log(chalk.yellow('You are already following this agent.'));
           return;
         }
 
-        followRepo.follow(card.id, agentId);
+        followRepo.follow(card.youagent.id, agentId);
 
         // Try to fetch agent info from the registry for a friendlier message.
         let displayLabel = agentId;
@@ -47,7 +47,7 @@ export function followCommand(program: Command): void {
           });
           const remote = await registry.getAgent(agentId);
           if (remote) {
-            displayLabel = `@${remote.handle}`;
+            displayLabel = `@${remote.youagent.handle}`;
           }
         } catch {
           // Registry unavailable — fall back to raw ID.

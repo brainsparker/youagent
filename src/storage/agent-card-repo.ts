@@ -24,18 +24,31 @@ interface AgentCardRow {
 
 function rowToAgentCard(row: AgentCardRow): AgentCard {
   return {
-    id: row.id,
-    handle: row.handle,
-    displayName: row.display_name,
-    description: row.description ?? undefined,
-    interests: JSON.parse(row.interests),
-    knowledgeDomains: row.knowledge_domains ? JSON.parse(row.knowledge_domains) : undefined,
-    cadence: row.cadence,
-    humanInTheLoop: row.human_in_the_loop ? JSON.parse(row.human_in_the_loop) : undefined,
-    capabilities: row.capabilities ? JSON.parse(row.capabilities) : undefined,
-    network: row.network ? JSON.parse(row.network) : undefined,
-    endpoints: row.endpoints ? JSON.parse(row.endpoints) : undefined,
-    meta: row.meta ? JSON.parse(row.meta) : undefined,
+    // A2A base fields
+    name: row.display_name,
+    description: row.description ?? '',
+    url: 'http://localhost:3141',
+    version: '0.1.0',
+    protocolVersion: '0.2.1',
+    capabilities: row.capabilities ? JSON.parse(row.capabilities) : {
+      streaming: false,
+      pushNotifications: false,
+      stateTransitionHistory: false,
+    },
+    skills: [],
+    defaultInputModes: ['text/plain'],
+    defaultOutputModes: ['text/plain'],
+
+    // YouAgent extensions
+    youagent: {
+      id: row.id,
+      handle: row.handle,
+      interests: JSON.parse(row.interests),
+      knowledgeDomains: row.knowledge_domains ? JSON.parse(row.knowledge_domains) : undefined,
+      cadence: row.cadence,
+      humanInTheLoop: row.human_in_the_loop ? JSON.parse(row.human_in_the_loop) : undefined,
+      network: row.network ? JSON.parse(row.network) : undefined,
+    },
   };
 }
 
@@ -53,18 +66,18 @@ export class AgentCardRepo {
     `);
 
     stmt.run({
-      id: card.id,
-      handle: card.handle,
-      displayName: card.displayName,
+      id: card.youagent.id,
+      handle: card.youagent.handle,
+      displayName: card.name,
       description: card.description ?? null,
-      interests: JSON.stringify(card.interests),
-      knowledgeDomains: card.knowledgeDomains ? JSON.stringify(card.knowledgeDomains) : null,
-      cadence: card.cadence,
-      humanInTheLoop: card.humanInTheLoop ? JSON.stringify(card.humanInTheLoop) : null,
-      capabilities: card.capabilities ? JSON.stringify(card.capabilities) : null,
-      network: card.network ? JSON.stringify(card.network) : null,
-      endpoints: card.endpoints ? JSON.stringify(card.endpoints) : null,
-      meta: card.meta ? JSON.stringify(card.meta) : null,
+      interests: JSON.stringify(card.youagent.interests),
+      knowledgeDomains: card.youagent.knowledgeDomains ? JSON.stringify(card.youagent.knowledgeDomains) : null,
+      cadence: card.youagent.cadence,
+      humanInTheLoop: card.youagent.humanInTheLoop ? JSON.stringify(card.youagent.humanInTheLoop) : null,
+      capabilities: JSON.stringify(card.capabilities),
+      network: card.youagent.network ? JSON.stringify(card.youagent.network) : null,
+      endpoints: null,
+      meta: null,
     });
   }
 
@@ -97,18 +110,18 @@ export class AgentCardRepo {
     `);
 
     stmt.run({
-      id: card.id,
-      handle: card.handle,
-      displayName: card.displayName,
+      id: card.youagent.id,
+      handle: card.youagent.handle,
+      displayName: card.name,
       description: card.description ?? null,
-      interests: JSON.stringify(card.interests),
-      knowledgeDomains: card.knowledgeDomains ? JSON.stringify(card.knowledgeDomains) : null,
-      cadence: card.cadence,
-      humanInTheLoop: card.humanInTheLoop ? JSON.stringify(card.humanInTheLoop) : null,
-      capabilities: card.capabilities ? JSON.stringify(card.capabilities) : null,
-      network: card.network ? JSON.stringify(card.network) : null,
-      endpoints: card.endpoints ? JSON.stringify(card.endpoints) : null,
-      meta: card.meta ? JSON.stringify(card.meta) : null,
+      interests: JSON.stringify(card.youagent.interests),
+      knowledgeDomains: card.youagent.knowledgeDomains ? JSON.stringify(card.youagent.knowledgeDomains) : null,
+      cadence: card.youagent.cadence,
+      humanInTheLoop: card.youagent.humanInTheLoop ? JSON.stringify(card.youagent.humanInTheLoop) : null,
+      capabilities: JSON.stringify(card.capabilities),
+      network: card.youagent.network ? JSON.stringify(card.youagent.network) : null,
+      endpoints: null,
+      meta: null,
     });
   }
 

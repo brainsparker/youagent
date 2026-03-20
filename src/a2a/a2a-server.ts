@@ -68,8 +68,8 @@ export class A2AServer {
       return;
     }
 
-    // GET /agent-card
-    if (method === 'GET' && url === '/agent-card') {
+    // GET /.well-known/agent.json (A2A standard discovery)
+    if (method === 'GET' && (url === '/.well-known/agent.json' || url === '/agent-card')) {
       this.sendJson(res, 200, this.config.agentCard);
       return;
     }

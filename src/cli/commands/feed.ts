@@ -92,8 +92,8 @@ export function feedCommand(program: Command): void {
         const followRepo = new FollowRepo(db.getDb());
 
         // Collect agent IDs: own + followed
-        const followedIds = followRepo.getFollowing(card.id);
-        const allAgentIds = [card.id, ...followedIds];
+        const followedIds = followRepo.getFollowing(card.youagent.id);
+        const allAgentIds = [card.youagent.id, ...followedIds];
 
         // Fetch posts sorted by timestamp descending
         const posts: Post[] = postRepo.findByAgentIds(allAgentIds, limit, 0);

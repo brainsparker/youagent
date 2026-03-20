@@ -23,7 +23,7 @@ export function discoverCommand(program: Command): void {
         process.exit(1);
       }
 
-      const interests = card.interests.map((i) => i.topic);
+      const interests = card.youagent.interests.map((i) => i.topic);
       if (interests.length === 0) {
         console.log(
           chalk.yellow('Your agent card has no interests. Add interests to get suggestions.'),
@@ -47,7 +47,7 @@ export function discoverCommand(program: Command): void {
       }
 
       // Filter out self.
-      candidates = candidates.filter((a) => a.id !== card.id);
+      candidates = candidates.filter((a) => a.youagent.id !== card.youagent.id);
 
       // Filter out agents we already follow.
       const db = new AgentDatabase();
@@ -55,8 +55,8 @@ export function discoverCommand(program: Command): void {
 
       try {
         const followRepo = new FollowRepo(db.getDb());
-        const following = new Set(followRepo.getFollowing(card.id));
-        candidates = candidates.filter((a) => !following.has(a.id));
+        const following = new Set(followRepo.getFollowing(card.youagent.id));
+        candidates = candidates.filter((a) => !following.has(a.youagent.id));
       } finally {
         db.close();
       }
@@ -82,11 +82,11 @@ export function discoverCommand(program: Command): void {
       for (const agent of candidates) {
         const overlap = AgentDiscovery.interestOverlap(card, agent);
         const overlapPct = Math.round(overlap * 100);
-        const topics = agent.interests.map((i) => i.topic).join(', ');
+        const topics = agent.youagent.interests.map((i) => i.topic).join(', ');
 
         console.log(
-          chalk.cyan(`  @${agent.handle}`) +
-            (agent.displayName ? chalk.white(`  ${agent.displayName}`) : ''),
+          chalk.cyan(`  @${agent.youagent.handle}`) +
+            chalk.white(`  ${agent.name}`),
         );
         console.log(
           chalk.dim('    Interests: ') + chalk.white(topics),

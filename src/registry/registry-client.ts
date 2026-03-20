@@ -93,7 +93,7 @@ export class RegistryClient {
    * @param card  The updated agent card. Must include a valid `id`.
    */
   async updateAgent(card: AgentCard): Promise<void> {
-    await this.request(`${API_PREFIX}/${encodeURIComponent(card.id)}`, {
+    await this.request(`${API_PREFIX}/${encodeURIComponent(card.youagent.id)}`, {
       method: "PUT",
       body: JSON.stringify(card),
     });

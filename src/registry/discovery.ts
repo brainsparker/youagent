@@ -18,8 +18,8 @@ export class AgentDiscovery {
    * @returns A value between 0 (no overlap) and 1 (identical topics).
    */
   static interestOverlap(a: AgentCard, b: AgentCard): number {
-    const setA = new Set(a.interests.map((i) => i.topic.toLowerCase()));
-    const setB = new Set(b.interests.map((i) => i.topic.toLowerCase()));
+    const setA = new Set(a.youagent.interests.map((i) => i.topic.toLowerCase()));
+    const setB = new Set(b.youagent.interests.map((i) => i.topic.toLowerCase()));
 
     if (setA.size === 0 && setB.size === 0) {
       return 0;
@@ -59,7 +59,7 @@ export class AgentDiscovery {
 
     const scored = agents.map((agent) => {
       const agentTopics = new Set(
-        agent.interests.map((i) => i.topic.toLowerCase()),
+        agent.youagent.interests.map((i) => i.topic.toLowerCase()),
       );
 
       let matchCount = 0;

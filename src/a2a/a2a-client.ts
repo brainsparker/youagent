@@ -71,7 +71,7 @@ export class A2AClient {
   ): A2AMessage {
     return {
       type,
-      senderId: this.senderCard.id,
+      senderId: this.senderCard.youagent.id,
       recipientId: '', // filled by the receiving server
       timestamp: new Date().toISOString(),
       payload,

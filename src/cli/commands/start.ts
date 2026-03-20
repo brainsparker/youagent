@@ -52,8 +52,8 @@ export function startCommand(program: Command): void {
 
       console.log('');
       console.log(
-        chalk.green.bold(`Agent @${card.handle} started.`) +
-          chalk.dim(` Searching every ${card.cadence}...`),
+        chalk.green.bold(`Agent @${card.youagent.handle} started.`) +
+          chalk.dim(` Searching every ${card.youagent.cadence}...`),
       );
       console.log(chalk.dim('Press Ctrl+C to stop.'));
       console.log('');

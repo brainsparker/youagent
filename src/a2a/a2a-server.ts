@@ -1,28 +1,54 @@
 /**
- * A2A server for handling incoming agent-to-agent messages.
+ * A2A server — JSON-RPC 2.0 based agent-to-agent message handling.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
-import type { A2AMessage, A2AMessageType, A2AResponse } from './types.js';
+import type { Post } from '../types/post.js';
+import type {
+  JsonRpcRequest,
+  JsonRpcResponse,
+  JsonRpcError,
+  Message,
+  Task,
+  TaskStatus,
+  Artifact,
+  Part,
+  DataPart,
+  MessageSendParams,
+  TaskQueryParams,
+  TaskIdParams,
+  YouAgentFollowData,
+  YouAgentUnfollowData,
+  YouAgentPostsRequestData,
+  YouAgentPostsResponseData,
+} from './types.js';
 
-/** Handler function for a specific A2A message type. */
-export type A2AHandler = (message: A2AMessage) => Promise<A2AResponse>;
+/** Handler function for an A2A JSON-RPC method. */
+export type A2AMethodHandler = (params: unknown, request: JsonRpcRequest) => Promise<unknown>;
 
 /** Configuration for the A2A server. */
 export interface A2AServerConfig {
   /** Port to listen on. Defaults to 3141. */
   port?: number;
-  /** The agent card to serve at GET /agent-card. */
+  /** The agent card to serve at GET /.well-known/agent.json. */
   agentCard: AgentCard;
 }
 
 const DEFAULT_PORT = 3141;
 
-/** HTTP server that receives and routes A2A protocol messages. */
+// JSON-RPC 2.0 standard error codes
+const PARSE_ERROR = -32700;
+const INVALID_REQUEST = -32600;
+const METHOD_NOT_FOUND = -32601;
+const INTERNAL_ERROR = -32603;
+
+/** HTTP server that receives and routes A2A JSON-RPC 2.0 messages. */
 export class A2AServer {
   private server: ReturnType<typeof createServer>;
-  private handlers = new Map<A2AMessageType, A2AHandler>();
+  private handlers = new Map<string, A2AMethodHandler>();
+  private tasks = new Map<string, Task>();
   private readonly port: number;
 
   constructor(private config: A2AServerConfig) {
@@ -30,9 +56,91 @@ export class A2AServer {
     this.server = createServer((req, res) => this.handleRequest(req, res));
   }
 
-  /** Register a handler for a specific A2A message type. */
-  onMessage(type: A2AMessageType, handler: A2AHandler): void {
-    this.handlers.set(type, handler);
+  /** Register a handler for an A2A method (e.g., 'message/send'). */
+  onMethod(method: string, handler: A2AMethodHandler): void {
+    this.handlers.set(method, handler);
+  }
+
+  /** Register default handlers for YouAgent social features. */
+  registerYouAgentHandlers(options: {
+    onFollow?: (data: YouAgentFollowData) => Promise<void>;
+    onUnfollow?: (data: YouAgentUnfollowData) => Promise<void>;
+    onPostsRequest?: (data: YouAgentPostsRequestData) => Promise<Post[]>;
+    onMessage?: (message: Message) => Promise<Message>;
+  }): void {
+    this.onMethod('message/send', async (params: unknown) => {
+      const { message } = params as MessageSendParams;
+
+      // Find YouAgent DataParts and route to social handlers
+      for (const part of message.parts) {
+        if (part.type === 'data') {
+          const dataType = (part.data as Record<string, unknown>).type as string | undefined;
+
+          if (dataType === 'youagent/follow' && options.onFollow) {
+            const followData = part.data as unknown as YouAgentFollowData;
+            await options.onFollow(followData);
+            return this.createTask(message, 'completed');
+          }
+
+          if (dataType === 'youagent/unfollow' && options.onUnfollow) {
+            const unfollowData = part.data as unknown as YouAgentUnfollowData;
+            await options.onUnfollow(unfollowData);
+            return this.createTask(message, 'completed');
+          }
+
+          if (dataType === 'youagent/posts-request' && options.onPostsRequest) {
+            const requestData = part.data as unknown as YouAgentPostsRequestData;
+            const posts = await options.onPostsRequest(requestData);
+            const responseData: YouAgentPostsResponseData = {
+              type: 'youagent/posts-response',
+              posts,
+            };
+            const artifact: Artifact = {
+              name: 'posts',
+              parts: [
+                {
+                  type: 'data',
+                  data: responseData as unknown as Record<string, unknown>,
+                } satisfies DataPart,
+              ],
+            };
+            return this.createTask(message, 'completed', [artifact]);
+          }
+        }
+      }
+
+      // Fall back to general message handler
+      if (options.onMessage) {
+        const responseMessage = await options.onMessage(message);
+        return this.createTask(message, 'completed', undefined, responseMessage);
+      }
+
+      return this.createTask(message, 'completed');
+    });
+
+    this.onMethod('tasks/get', async (params: unknown) => {
+      const { id } = params as TaskQueryParams;
+      const task = this.tasks.get(id);
+      if (!task) {
+        const error: JsonRpcError = { code: -32001, message: `Task not found: ${id}` };
+        throw error;
+      }
+      return task;
+    });
+
+    this.onMethod('tasks/cancel', async (params: unknown) => {
+      const { id } = params as TaskIdParams;
+      const task = this.tasks.get(id);
+      if (!task) {
+        const error: JsonRpcError = { code: -32001, message: `Task not found: ${id}` };
+        throw error;
+      }
+      task.status = {
+        state: 'canceled',
+        timestamp: new Date().toISOString(),
+      };
+      return task;
+    });
   }
 
   /** Start listening for incoming connections. */
@@ -56,7 +164,40 @@ export class A2AServer {
     });
   }
 
-  // ── private ──────────────────────────────────────────────
+  // ── Private ────────────────────────────────────────────────────────────
+
+  private createTask(
+    incomingMessage: Message,
+    state: Task['status']['state'],
+    artifacts?: Artifact[],
+    responseMessage?: Message,
+  ): Task {
+    const taskId = incomingMessage.taskId ?? uuidv4();
+    const contextId = incomingMessage.contextId ?? uuidv4();
+
+    const status: TaskStatus = {
+      state,
+      message: responseMessage,
+      timestamp: new Date().toISOString(),
+    };
+
+    const existing = this.tasks.get(taskId);
+    const history = existing?.history ? [...existing.history, incomingMessage] : [incomingMessage];
+    if (responseMessage) {
+      history.push(responseMessage);
+    }
+
+    const task: Task = {
+      id: taskId,
+      contextId,
+      status,
+      history,
+      artifacts: artifacts ?? existing?.artifacts,
+    };
+
+    this.tasks.set(taskId, task);
+    return task;
+  }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const method = req.method?.toUpperCase() ?? '';
@@ -74,72 +215,83 @@ export class A2AServer {
       return;
     }
 
-    // POST / — A2A message
+    // POST / — JSON-RPC 2.0 dispatcher
     if (method === 'POST' && url === '/') {
-      await this.handleA2AMessage(req, res);
+      await this.handleJsonRpc(req, res);
       return;
     }
 
     this.sendJson(res, 404, { error: 'not found' });
   }
 
-  private async handleA2AMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let body: string;
     try {
       body = await this.readBody(req);
     } catch {
-      this.sendJson(res, 400, { error: 'failed to read request body' });
+      this.sendJsonRpcError(res, null, PARSE_ERROR, 'Failed to read request body');
       return;
     }
 
-    let message: A2AMessage;
+    let request: JsonRpcRequest;
     try {
-      message = JSON.parse(body) as A2AMessage;
+      request = JSON.parse(body) as JsonRpcRequest;
     } catch {
-      this.sendJson(res, 400, { error: 'invalid JSON' });
+      this.sendJsonRpcError(res, null, PARSE_ERROR, 'Invalid JSON');
       return;
     }
 
-    if (!message.type || !message.messageId) {
-      this.sendJson(res, 400, {
-        success: false,
-        messageId: message.messageId ?? '',
-        error: 'missing required fields: type, messageId',
-      } satisfies A2AResponse);
+    // Validate JSON-RPC structure
+    if (request.jsonrpc !== '2.0' || !request.id || !request.method) {
+      this.sendJsonRpcError(
+        res,
+        request.id ?? null,
+        INVALID_REQUEST,
+        'Invalid JSON-RPC 2.0 request: missing jsonrpc, id, or method',
+      );
       return;
     }
 
-    // Handle ping natively
-    if (message.type === 'ping') {
-      this.sendJson(res, 200, {
-        success: true,
-        messageId: message.messageId,
-        data: { type: 'pong' },
-      } satisfies A2AResponse);
-      return;
-    }
-
-    const handler = this.handlers.get(message.type);
+    // Route to handler
+    const handler = this.handlers.get(request.method);
     if (!handler) {
-      this.sendJson(res, 400, {
-        success: false,
-        messageId: message.messageId,
-        error: `no handler for message type: ${message.type}`,
-      } satisfies A2AResponse);
+      this.sendJsonRpcError(res, request.id, METHOD_NOT_FOUND, `Method not found: ${request.method}`);
       return;
     }
 
     try {
-      const response = await handler(message);
+      const result = await handler(request.params, request);
+      const response: JsonRpcResponse = {
+        jsonrpc: '2.0',
+        id: request.id,
+        result,
+      };
       this.sendJson(res, 200, response);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'internal error';
-      this.sendJson(res, 500, {
-        success: false,
-        messageId: message.messageId,
-        error: errorMessage,
-      } satisfies A2AResponse);
+      if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+        // Already a JsonRpcError-shaped object
+        const rpcError = err as JsonRpcError;
+        this.sendJsonRpcError(res, request.id, rpcError.code, rpcError.message, rpcError.data);
+      } else {
+        const message = err instanceof Error ? err.message : 'Internal error';
+        this.sendJsonRpcError(res, request.id, INTERNAL_ERROR, message);
+      }
     }
+  }
+
+  private sendJsonRpcError(
+    res: ServerResponse,
+    id: string | null,
+    code: number,
+    message: string,
+    data?: unknown,
+  ): void {
+    const response: JsonRpcResponse = {
+      jsonrpc: '2.0',
+      id: id ?? '',
+      error: { code, message, data },
+    };
+    this.sendJson(res, 200, response);
   }
 
   private readBody(req: IncomingMessage): Promise<string> {

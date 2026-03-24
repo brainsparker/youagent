@@ -1,94 +1,189 @@
 /**
- * A2A client for sending messages to other agents.
+ * A2A client — JSON-RPC 2.0 based agent-to-agent communication.
  */
 
 import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import type {
-  A2AFollowPayload,
-  A2AGetPostsPayload,
-  A2AMessage,
-  A2APostUpdatePayload,
-  A2AResponse,
-  A2AUnfollowPayload,
+  JsonRpcRequest,
+  JsonRpcResponse,
+  Message,
+  Task,
+  Part,
+  TextPart,
+  DataPart,
+  MessageSendParams,
+  TaskQueryParams,
+  TaskIdParams,
+  YouAgentFollowData,
+  YouAgentUnfollowData,
+  YouAgentPostsRequestData,
+  YouAgentPostsResponseData,
 } from './types.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-/** Client for sending A2A messages to other agents. */
+/** JSON-RPC 2.0 client for the A2A protocol. */
 export class A2AClient {
   constructor(private senderCard: AgentCard) {}
 
-  /** Send a follow request to another agent. */
-  async follow(targetEndpoint: string, card: AgentCard): Promise<A2AResponse> {
-    const payload: A2AFollowPayload = { agentCard: card };
-    const message = this.buildMessage('follow', targetEndpoint, payload);
-    return this.send(targetEndpoint, message);
-  }
+  // ── A2A standard methods ──────────────────────────────────────────────
 
-  /** Send an unfollow notification to another agent. */
-  async unfollow(targetEndpoint: string, agentId: string): Promise<A2AResponse> {
-    const payload: A2AUnfollowPayload = { agentId };
-    const message = this.buildMessage('unfollow', targetEndpoint, payload);
-    return this.send(targetEndpoint, message);
-  }
+  /** Send a message to a remote agent, creating or continuing a task. */
+  async sendMessage(agentUrl: string, parts: Part[], contextId?: string): Promise<Task> {
+    const message = this.buildMessage(parts, contextId);
+    const params: MessageSendParams = { message };
+    const response = await this.rpc(agentUrl, 'message/send', params);
 
-  /** Request posts from another agent. */
-  async getPosts(targetEndpoint: string, since?: string, limit?: number): Promise<Post[]> {
-    const payload: A2AGetPostsPayload = { since, limit };
-    const message = this.buildMessage('get-posts', targetEndpoint, payload);
-    const response = await this.send(targetEndpoint, message);
-    if (!response.success) {
-      throw new Error(`getPosts failed: ${response.error ?? 'unknown error'}`);
+    if (response.error) {
+      throw new Error(`message/send failed: ${response.error.message}`);
     }
-    const data = response.data as A2APostUpdatePayload | undefined;
-    return data?.posts ?? [];
+
+    return response.result as Task;
   }
 
-  /** Ping an agent to check availability. */
-  async ping(targetEndpoint: string): Promise<boolean> {
+  /** Get a task by ID from a remote agent. */
+  async getTask(agentUrl: string, taskId: string): Promise<Task> {
+    const params: TaskQueryParams = { id: taskId };
+    const response = await this.rpc(agentUrl, 'tasks/get', params);
+
+    if (response.error) {
+      throw new Error(`tasks/get failed: ${response.error.message}`);
+    }
+
+    return response.result as Task;
+  }
+
+  /** Cancel a task on a remote agent. */
+  async cancelTask(agentUrl: string, taskId: string): Promise<Task> {
+    const params: TaskIdParams = { id: taskId };
+    const response = await this.rpc(agentUrl, 'tasks/cancel', params);
+
+    if (response.error) {
+      throw new Error(`tasks/cancel failed: ${response.error.message}`);
+    }
+
+    return response.result as Task;
+  }
+
+  /** Discover a remote agent by fetching its agent card. */
+  async discover(agentUrl: string): Promise<AgentCard> {
+    const url = agentUrl.replace(/\/+$/, '');
+    const res = await fetch(`${url}/.well-known/agent.json`);
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Discovery failed (HTTP ${res.status}): ${text}`);
+    }
+
+    return (await res.json()) as AgentCard;
+  }
+
+  /** Ping a remote agent. */
+  async ping(agentUrl: string): Promise<boolean> {
     try {
-      const message = this.buildMessage('ping', targetEndpoint, null);
-      const response = await this.send(targetEndpoint, message);
-      return response.success;
+      const url = agentUrl.replace(/\/+$/, '');
+      const res = await fetch(`${url}/health`);
+      return res.ok;
     } catch {
       return false;
     }
   }
 
-  /** Send a generic A2A message to a target endpoint. */
-  async send(targetEndpoint: string, message: A2AMessage): Promise<A2AResponse> {
-    return this.sendWithRetry(targetEndpoint, message, 1);
-  }
+  // ── YouAgent convenience methods (use DataPart within A2A messages) ───
 
-  // ── private ──────────────────────────────────────────────
-
-  private buildMessage(
-    type: A2AMessage['type'],
-    _targetEndpoint: string,
-    payload: unknown,
-  ): A2AMessage {
-    return {
-      type,
-      senderId: this.senderCard.youagent.id,
-      recipientId: '', // filled by the receiving server
-      timestamp: new Date().toISOString(),
-      payload,
-      messageId: uuidv4(),
+  /** Send a follow request via A2A message/send with a DataPart. */
+  async follow(agentUrl: string): Promise<Task> {
+    const followData: YouAgentFollowData = {
+      type: 'youagent/follow',
+      agentId: this.senderCard.youagent.id,
+      handle: this.senderCard.youagent.handle,
     };
+    const dataPart: DataPart = {
+      type: 'data',
+      data: followData as unknown as Record<string, unknown>,
+    };
+    return this.sendMessage(agentUrl, [dataPart]);
   }
 
-  private async sendWithRetry(
-    targetEndpoint: string,
-    message: A2AMessage,
-    retries: number,
-  ): Promise<A2AResponse> {
+  /** Send an unfollow notification. */
+  async unfollow(agentUrl: string, agentId: string): Promise<Task> {
+    const unfollowData: YouAgentUnfollowData = {
+      type: 'youagent/unfollow',
+      agentId,
+    };
+    const dataPart: DataPart = {
+      type: 'data',
+      data: unfollowData as unknown as Record<string, unknown>,
+    };
+    return this.sendMessage(agentUrl, [dataPart]);
+  }
+
+  /** Request posts from a remote agent. */
+  async getPosts(agentUrl: string, since?: string, limit?: number): Promise<Post[]> {
+    const requestData: YouAgentPostsRequestData = {
+      type: 'youagent/posts-request',
+      since,
+      limit,
+    };
+    const dataPart: DataPart = {
+      type: 'data',
+      data: requestData as unknown as Record<string, unknown>,
+    };
+    const task = await this.sendMessage(agentUrl, [dataPart]);
+
+    // Extract posts from task artifacts
+    if (task.artifacts) {
+      for (const artifact of task.artifacts) {
+        for (const part of artifact.parts) {
+          if (part.type === 'data') {
+            const payload = part.data as unknown as YouAgentPostsResponseData;
+            if (payload.type === 'youagent/posts-response') {
+              return payload.posts;
+            }
+          }
+        }
+      }
+    }
+
+    return [];
+  }
+
+  /** Send a text message to another agent. */
+  async sendText(agentUrl: string, text: string, contextId?: string): Promise<Task> {
+    const textPart: TextPart = { type: 'text', text };
+    return this.sendMessage(agentUrl, [textPart], contextId);
+  }
+
+  // ── Private helpers ───────────────────────────────────────────────────
+
+  private async rpc(agentUrl: string, method: string, params: unknown): Promise<JsonRpcResponse> {
+    const request = this.buildJsonRpc(method, params);
     let lastError: unknown;
 
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await this.doFetch(targetEndpoint, message);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+        try {
+          const res = await fetch(agentUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request),
+            signal: controller.signal,
+          });
+
+          if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(`HTTP ${res.status}: ${text}`);
+          }
+
+          return (await res.json()) as JsonRpcResponse;
+        } finally {
+          clearTimeout(timer);
+        }
       } catch (err) {
         lastError = err;
       }
@@ -97,26 +192,25 @@ export class A2AClient {
     throw lastError;
   }
 
-  private async doFetch(targetEndpoint: string, message: A2AMessage): Promise<A2AResponse> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  private buildMessage(parts: Part[], contextId?: string): Message {
+    return {
+      role: 'user',
+      parts,
+      messageId: uuidv4(),
+      contextId: contextId ?? uuidv4(),
+      metadata: {
+        senderId: this.senderCard.youagent.id,
+        senderHandle: this.senderCard.youagent.handle,
+      },
+    };
+  }
 
-    try {
-      const res = await fetch(targetEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(message),
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status}: ${text}`);
-      }
-
-      return (await res.json()) as A2AResponse;
-    } finally {
-      clearTimeout(timer);
-    }
+  private buildJsonRpc(method: string, params: unknown): JsonRpcRequest {
+    return {
+      jsonrpc: '2.0',
+      id: uuidv4(),
+      method,
+      params,
+    };
   }
 }

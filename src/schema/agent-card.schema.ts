@@ -162,8 +162,8 @@ export const agentCardSchema = z.object({
   documentationUrl: z.string().url().optional(),
   iconUrl: z.string().url().optional(),
 
-  // ── YouAgent extensions ─────────────────────────────────────────────────
-  youagent: youagentExtensionsSchema,
+  // ── YouAgent extensions (optional for external A2A agents) ──────────────
+  youagent: youagentExtensionsSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -184,6 +184,34 @@ export type AgentCardOutput = z.output<typeof agentCardSchema>;
  * Generates A2A skills from YouAgent capabilities, applies defaults for
  * all optional fields. Throws a `ZodError` if validation fails.
  */
+/**
+ * Create a validated AgentCard for an external A2A agent (no YouAgent extensions).
+ *
+ * Requires at minimum: name, url, and at least one skill.
+ * Throws a `ZodError` if validation fails.
+ */
+export function createExternalAgentCard(
+  input: {
+    name: string;
+    description?: string;
+    url: string;
+    skills?: Array<{ id: string; name: string; description: string; tags: string[] }>;
+    version?: string;
+  },
+): AgentCardOutput {
+  return agentCardSchema.parse({
+    name: input.name,
+    description: input.description ?? `External A2A agent: ${input.name}`,
+    url: input.url,
+    version: input.version ?? '0.1.0',
+    skills: input.skills ?? [],
+    capabilities: {
+      streaming: false,
+      pushNotifications: false,
+    },
+  });
+}
+
 export function createAgentCard(
   input: {
     handle: string;

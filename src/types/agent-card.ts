@@ -147,8 +147,51 @@ export interface YouAgentExtensions {
  * The `youagent` extension namespace contains social network features.
  */
 export interface AgentCard extends A2AAgentCard {
-  /** YouAgent-specific extensions. */
-  youagent: YouAgentExtensions;
+  /** YouAgent-specific extensions. Present only for native YouAgent cards. */
+  youagent?: YouAgentExtensions;
+}
+
+// ── Helper functions for external agent compatibility ────────────────────────
+
+/**
+ * Type guard: returns true if the card has YouAgent extensions.
+ */
+export function isYouAgent(card: AgentCard): card is AgentCard & { youagent: YouAgentExtensions } {
+  return card.youagent !== undefined;
+}
+
+/**
+ * Extract effective interest topics from any agent card.
+ * YouAgent cards use `youagent.interests`; external cards fall back to `skills[].tags`.
+ */
+export function getEffectiveInterests(card: AgentCard): string[] {
+  if (isYouAgent(card)) {
+    return card.youagent.interests.map((i) => i.topic);
+  }
+  const tags = new Set<string>();
+  for (const skill of card.skills) {
+    for (const tag of skill.tags) {
+      tags.add(tag);
+    }
+  }
+  return [...tags];
+}
+
+/**
+ * Get a stable identifier and handle for any agent card.
+ * YouAgent cards use `youagent.id` / `youagent.handle`; external cards derive from `url` / `name`.
+ */
+export function getAgentIdentifier(card: AgentCard): { id: string; handle: string } {
+  if (isYouAgent(card)) {
+    return { id: card.youagent.id, handle: card.youagent.handle };
+  }
+  // Derive handle from name: lowercase, replace non-alphanumeric with hyphens, trim
+  const handle = card.name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 32) || 'external';
+  return { id: card.url, handle };
 }
 
 // ── Legacy compat aliases ───────────────────────────────────────────────────

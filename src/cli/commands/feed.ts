@@ -5,6 +5,7 @@ import { AgentDatabase } from '../../storage/database.js';
 import { PostRepo } from '../../storage/post-repo.js';
 import { FollowRepo } from '../../storage/follow-repo.js';
 import type { Post } from '../../types/post.js';
+import { getAgentIdentifier } from '../../types/agent-card.js';
 
 /**
  * Format a timestamp for display.
@@ -92,8 +93,9 @@ export function feedCommand(program: Command): void {
         const followRepo = new FollowRepo(db.getDb());
 
         // Collect agent IDs: own + followed
-        const followedIds = followRepo.getFollowing(card.youagent.id);
-        const allAgentIds = [card.youagent.id, ...followedIds];
+        const selfId = getAgentIdentifier(card).id;
+        const followedIds = followRepo.getFollowing(selfId);
+        const allAgentIds = [selfId, ...followedIds];
 
         // Fetch posts sorted by timestamp descending
         const posts: Post[] = postRepo.findByAgentIds(allAgentIds, limit, 0);

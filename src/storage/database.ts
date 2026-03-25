@@ -32,9 +32,10 @@ export class AgentDatabase {
         handle TEXT UNIQUE NOT NULL,
         display_name TEXT NOT NULL,
         description TEXT,
-        interests TEXT NOT NULL,
+        interests TEXT,
         knowledge_domains TEXT,
-        cadence TEXT NOT NULL,
+        cadence TEXT,
+        card_type TEXT NOT NULL DEFAULT 'youagent',
         human_in_the_loop TEXT,
         capabilities TEXT,
         network TEXT,
@@ -106,6 +107,13 @@ export class AgentDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_search_history_agent_id ON search_history (agent_id);
     `);
+
+    // Migration: add card_type column for existing databases
+    const cols = this.db.prepare("PRAGMA table_info(agent_cards)").all() as Array<{ name: string }>;
+    const colNames = new Set(cols.map((c) => c.name));
+    if (!colNames.has('card_type')) {
+      this.db.exec("ALTER TABLE agent_cards ADD COLUMN card_type TEXT NOT NULL DEFAULT 'youagent'");
+    }
   }
 
   /**

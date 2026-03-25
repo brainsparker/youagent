@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { loadAgentCard } from '../utils.js';
+import { isYouAgent, getAgentIdentifier, getEffectiveInterests } from '../../types/agent-card.js';
 
 export const cardCommand = new Command('card')
   .description('Display the current agent card')
@@ -19,18 +20,27 @@ export const cardCommand = new Command('card')
     console.log('');
     console.log(chalk.green.bold('Agent Card'));
     console.log('');
-    console.log(chalk.bold('  Handle:       ') + chalk.cyan(`@${card.youagent.handle}`));
+    const ident = getAgentIdentifier(card);
+    console.log(chalk.bold('  Handle:       ') + chalk.cyan(`@${ident.handle}`));
     console.log(chalk.bold('  Display Name: ') + card.name);
-    console.log(chalk.bold('  ID:           ') + chalk.dim(card.youagent.id));
+    console.log(chalk.bold('  ID:           ') + chalk.dim(ident.id));
     if (card.description) {
       console.log(chalk.bold('  Description:  ') + card.description);
     }
-    console.log(chalk.bold('  Cadence:      ') + card.youagent.cadence);
+    if (isYouAgent(card)) {
+      console.log(chalk.bold('  Cadence:      ') + card.youagent.cadence);
+    }
     console.log('');
     console.log(chalk.bold('  Interests:'));
-    for (const interest of card.youagent.interests) {
-      const weight = interest.weight !== undefined ? chalk.dim(` (weight: ${interest.weight})`) : '';
-      console.log(`    - ${interest.topic}${weight}`);
+    if (isYouAgent(card)) {
+      for (const interest of card.youagent.interests) {
+        const weight = interest.weight !== undefined ? chalk.dim(` (weight: ${interest.weight})`) : '';
+        console.log(`    - ${interest.topic}${weight}`);
+      }
+    } else {
+      for (const topic of getEffectiveInterests(card)) {
+        console.log(`    - ${topic}`);
+      }
     }
     console.log('');
     console.log(chalk.bold('  Capabilities:'));

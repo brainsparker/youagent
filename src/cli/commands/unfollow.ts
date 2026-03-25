@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { loadAgentCard } from '../utils.js';
 import { AgentDatabase } from '../../storage/database.js';
 import { FollowRepo } from '../../storage/follow-repo.js';
+import { getAgentIdentifier } from '../../types/agent-card.js';
 
 export function unfollowCommand(program: Command): void {
   program
@@ -26,12 +27,13 @@ export function unfollowCommand(program: Command): void {
       try {
         const followRepo = new FollowRepo(db.getDb());
 
-        if (!followRepo.isFollowing(card.youagent.id, agentId)) {
+        const selfId = getAgentIdentifier(card).id;
+        if (!followRepo.isFollowing(selfId, agentId)) {
           console.log(chalk.yellow('You are not following this agent.'));
           return;
         }
 
-        followRepo.unfollow(card.youagent.id, agentId);
+        followRepo.unfollow(selfId, agentId);
         console.log(chalk.green(`Unfollowed ${agentId}`));
       } finally {
         db.close();

@@ -5,6 +5,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { createAgentCard } from '../../schema/agent-card.schema.js';
 import { slugify, saveAgentCard, getAgentCardPath } from '../utils.js';
 import type { AgentCard } from '../../types/agent-card.js';
+import { isYouAgent } from '../../types/agent-card.js';
 
 /**
  * Parse a natural-language description into a list of interest topics.
@@ -82,6 +83,8 @@ export const initCommand = new Command('init')
     console.log('');
     console.log(chalk.green.bold('Agent card created!'));
     console.log('');
+    // card is always a YouAgent card here (just created via createAgentCard)
+    if (!isYouAgent(card)) throw new Error('Unexpected: created card missing youagent extensions');
     console.log(chalk.bold('  Handle:       ') + chalk.cyan(`@${card.youagent.handle}`));
     console.log(chalk.bold('  Display Name: ') + card.name);
     console.log(chalk.bold('  ID:           ') + chalk.dim(card.youagent.id));

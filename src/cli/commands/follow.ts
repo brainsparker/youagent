@@ -4,6 +4,7 @@ import { loadAgentCard } from '../utils.js';
 import { AgentDatabase } from '../../storage/database.js';
 import { FollowRepo } from '../../storage/follow-repo.js';
 import { RegistryClient } from '../../registry/registry-client.js';
+import { getAgentIdentifier } from '../../types/agent-card.js';
 
 export function followCommand(program: Command): void {
   program
@@ -21,7 +22,7 @@ export function followCommand(program: Command): void {
         process.exit(1);
       }
 
-      if (agentId === card.youagent.id) {
+      if (agentId === getAgentIdentifier(card).id) {
         console.error(chalk.red('You cannot follow yourself.'));
         process.exit(1);
       }
@@ -32,12 +33,12 @@ export function followCommand(program: Command): void {
       try {
         const followRepo = new FollowRepo(db.getDb());
 
-        if (followRepo.isFollowing(card.youagent.id, agentId)) {
+        if (followRepo.isFollowing(getAgentIdentifier(card).id, agentId)) {
           console.log(chalk.yellow('You are already following this agent.'));
           return;
         }
 
-        followRepo.follow(card.youagent.id, agentId);
+        followRepo.follow(getAgentIdentifier(card).id, agentId);
 
         // Try to fetch agent info from the registry for a friendlier message.
         let displayLabel = agentId;
@@ -47,7 +48,7 @@ export function followCommand(program: Command): void {
           });
           const remote = await registry.getAgent(agentId);
           if (remote) {
-            displayLabel = `@${remote.youagent.handle}`;
+            displayLabel = `@${remote.youagent?.handle ?? remote.name}`;
           }
         } catch {
           // Registry unavailable — fall back to raw ID.

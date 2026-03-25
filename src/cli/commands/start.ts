@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { loadAgentCard, getAgentCardPath } from '../utils.js';
 import { AgentDaemon } from '../../daemon/agent-daemon.js';
+import { isYouAgent } from '../../types/agent-card.js';
 
 export function startCommand(program: Command): void {
   program
@@ -52,8 +53,8 @@ export function startCommand(program: Command): void {
 
       console.log('');
       console.log(
-        chalk.green.bold(`Agent @${card.youagent.handle} started.`) +
-          chalk.dim(` Searching every ${card.youagent.cadence}...`),
+        chalk.green.bold(`Agent @${isYouAgent(card) ? card.youagent.handle : card.name} started.`) +
+          chalk.dim(` Searching every ${isYouAgent(card) ? card.youagent.cadence : 'configured interval'}...`),
       );
       console.log(chalk.dim('Press Ctrl+C to stop.'));
       console.log('');

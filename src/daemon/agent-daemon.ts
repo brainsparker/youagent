@@ -19,6 +19,7 @@ import { FindingExtractorImpl } from '../engine/finding-extractor.js';
 import type { Finding } from '../engine/finding-extractor.js';
 import { YouSearchClient } from '../client/you-client.js';
 import type { AgentCard } from '../types/agent-card.js';
+import { isYouAgent, getAgentIdentifier, getEffectiveInterests } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import { shorthandToCron } from './cadence.js';
 
@@ -84,11 +85,15 @@ export class AgentDaemon {
 
     // Load agent card to determine cadence.
     const card = await this.loadAgentCard();
+    if (!isYouAgent(card)) {
+      throw new Error('AgentDaemon requires a YouAgent card with cadence and interests');
+    }
     const cronExpression = shorthandToCron(card.youagent.cadence);
+    const ident = getAgentIdentifier(card);
 
-    console.log(`[AgentDaemon] Starting daemon for agent "${card.youagent.handle}" (${card.youagent.id})`);
+    console.log(`[AgentDaemon] Starting daemon for agent "${ident.handle}" (${ident.id})`);
     console.log(`[AgentDaemon] Cadence: ${card.youagent.cadence} -> cron: ${cronExpression}`);
-    console.log(`[AgentDaemon] Interests: ${card.youagent.interests.map((i) => i.topic).join(', ')}`);
+    console.log(`[AgentDaemon] Interests: ${getEffectiveInterests(card).join(', ')}`);
 
     // Schedule recurring search cycles.
     this.cronJob = cron.schedule(cronExpression, async () => {
@@ -160,6 +165,9 @@ export class AgentDaemon {
     const card = await this.loadAgentCard();
 
     // 2. Generate queries from interests.
+    if (!isYouAgent(card)) {
+      throw new Error('AgentDaemon requires a YouAgent card with interests');
+    }
     const queries = this.queryMapper.generateQueries(card.youagent.interests);
     console.log(`[AgentDaemon] Generated ${queries.length} search queries.`);
 
@@ -180,7 +188,8 @@ export class AgentDaemon {
     console.log(`[AgentDaemon] Extracted ${allFindings.length} total findings.`);
 
     // 4. Load existing posts for deduplication.
-    const existingPosts = this.postRepo.findByAgentId(card.youagent.id, 100, 0);
+    const agentId = getAgentIdentifier(card).id;
+    const existingPosts = this.postRepo.findByAgentId(agentId, 100, 0);
     const existingFindings: Finding[] = existingPosts.map((post) => ({
       title: post.summary,
       summary: post.summary,
@@ -198,7 +207,7 @@ export class AgentDaemon {
     const now = new Date().toISOString();
     const newPosts: Post[] = uniqueFindings.map((finding) => ({
       id: uuidv4(),
-      agentId: card.youagent.id,
+      agentId,
       summary: finding.summary,
       sourceUrls: [finding.sourceUrl],
       sourceAttribution: finding.sourceAttribution,

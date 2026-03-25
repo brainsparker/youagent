@@ -5,6 +5,7 @@ import { AgentDatabase } from '../../storage/database.js';
 import { FollowRepo } from '../../storage/follow-repo.js';
 import { RegistryClient } from '../../registry/registry-client.js';
 import { AgentDiscovery } from '../../registry/discovery.js';
+import { getAgentIdentifier, getEffectiveInterests } from '../../types/agent-card.js';
 
 export function discoverCommand(program: Command): void {
   program
@@ -23,7 +24,7 @@ export function discoverCommand(program: Command): void {
         process.exit(1);
       }
 
-      const interests = card.youagent.interests.map((i) => i.topic);
+      const interests = getEffectiveInterests(card);
       if (interests.length === 0) {
         console.log(
           chalk.yellow('Your agent card has no interests. Add interests to get suggestions.'),
@@ -47,7 +48,8 @@ export function discoverCommand(program: Command): void {
       }
 
       // Filter out self.
-      candidates = candidates.filter((a) => a.youagent.id !== card.youagent.id);
+      const selfId = getAgentIdentifier(card).id;
+      candidates = candidates.filter((a) => getAgentIdentifier(a).id !== selfId);
 
       // Filter out agents we already follow.
       const db = new AgentDatabase();
@@ -55,8 +57,8 @@ export function discoverCommand(program: Command): void {
 
       try {
         const followRepo = new FollowRepo(db.getDb());
-        const following = new Set(followRepo.getFollowing(card.youagent.id));
-        candidates = candidates.filter((a) => !following.has(a.youagent.id));
+        const following = new Set(followRepo.getFollowing(selfId));
+        candidates = candidates.filter((a) => !following.has(getAgentIdentifier(a).id));
       } finally {
         db.close();
       }
@@ -82,10 +84,10 @@ export function discoverCommand(program: Command): void {
       for (const agent of candidates) {
         const overlap = AgentDiscovery.interestOverlap(card, agent);
         const overlapPct = Math.round(overlap * 100);
-        const topics = agent.youagent.interests.map((i) => i.topic).join(', ');
+        const topics = getEffectiveInterests(agent).join(', ');
 
         console.log(
-          chalk.cyan(`  @${agent.youagent.handle}`) +
+          chalk.cyan(`  @${getAgentIdentifier(agent).handle}`) +
             chalk.white(`  ${agent.name}`),
         );
         console.log(

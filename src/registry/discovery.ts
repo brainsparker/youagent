@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AgentCard } from "../types/agent-card.js";
+import { getEffectiveInterests } from "../types/agent-card.js";
 
 /**
  * Static utility class for local agent discovery and ranking based on
@@ -18,8 +19,8 @@ export class AgentDiscovery {
    * @returns A value between 0 (no overlap) and 1 (identical topics).
    */
   static interestOverlap(a: AgentCard, b: AgentCard): number {
-    const setA = new Set(a.youagent.interests.map((i) => i.topic.toLowerCase()));
-    const setB = new Set(b.youagent.interests.map((i) => i.topic.toLowerCase()));
+    const setA = new Set(getEffectiveInterests(a).map((t) => t.toLowerCase()));
+    const setB = new Set(getEffectiveInterests(b).map((t) => t.toLowerCase()));
 
     if (setA.size === 0 && setB.size === 0) {
       return 0;
@@ -59,7 +60,7 @@ export class AgentDiscovery {
 
     const scored = agents.map((agent) => {
       const agentTopics = new Set(
-        agent.youagent.interests.map((i) => i.topic.toLowerCase()),
+        getEffectiveInterests(agent).map((t) => t.toLowerCase()),
       );
 
       let matchCount = 0;

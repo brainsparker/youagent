@@ -8,6 +8,7 @@ import { FindingExtractorImpl } from '../../engine/finding-extractor.js';
 import { PostPublisher } from '../../engine/post-publisher.js';
 import { RespondHandler } from '../../engine/respond-handler.js';
 import { join } from 'node:path';
+import { getAgentIdentifier } from '../../types/agent-card.js';
 
 export function respondCommand(program: Command): void {
   program
@@ -33,7 +34,7 @@ export function respondCommand(program: Command): void {
       const postRepo = new PostRepo(db.getDb());
       const searchClient = new YouSearchClient({ apiKey });
       const extractor = new FindingExtractorImpl(searchClient);
-      const publisher = new PostPublisher(postRepo, card.youagent.id);
+      const publisher = new PostPublisher(postRepo, getAgentIdentifier(card).id);
       const handler = new RespondHandler(searchClient, extractor, publisher, postRepo);
 
       console.log(chalk.dim('Investigating post ' + postId + '...'));

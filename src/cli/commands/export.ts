@@ -7,6 +7,7 @@ import { AgentDatabase } from '../../storage/database.js';
 import { PostRepo } from '../../storage/post-repo.js';
 import { FollowRepo } from '../../storage/follow-repo.js';
 import { KnowledgeGraph } from '../../knowledge/knowledge-graph.js';
+import { getAgentIdentifier } from '../../types/agent-card.js';
 
 export function exportCommand(program: Command): void {
   program
@@ -27,9 +28,10 @@ export function exportCommand(program: Command): void {
       const followRepo = new FollowRepo(db.getDb());
       const kg = new KnowledgeGraph(db.getDb());
 
-      const posts = postRepo.findByAgentId(card.youagent.id, 1000);
-      const following = followRepo.getFollowing(card.youagent.id);
-      const followers = followRepo.getFollowers(card.youagent.id);
+      const ident = getAgentIdentifier(card);
+      const posts = postRepo.findByAgentId(ident.id, 1000);
+      const following = followRepo.getFollowing(ident.id);
+      const followers = followRepo.getFollowers(ident.id);
       const entities = kg.getAllEntities(1000);
 
       const exportData = {
@@ -45,7 +47,7 @@ export function exportCommand(program: Command): void {
       await writeFile(outputPath, JSON.stringify(exportData, null, 2) + '\n', 'utf-8');
 
       console.log(chalk.green(`Exported to ${outputPath}`));
-      console.log(chalk.dim(`  Agent: @${card.youagent.handle}`));
+      console.log(chalk.dim(`  Agent: @${ident.handle}`));
       console.log(chalk.dim(`  Posts: ${posts.length}`));
       console.log(chalk.dim(`  Following: ${following.length}`));
       console.log(chalk.dim(`  Knowledge entities: ${entities.length}`));

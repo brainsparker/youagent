@@ -4,6 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
+import { isYouAgent, getAgentIdentifier } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import type {
   JsonRpcRequest,
@@ -95,6 +96,9 @@ export class A2AClient {
 
   /** Send a follow request via A2A message/send with a DataPart. */
   async follow(agentUrl: string): Promise<Task> {
+    if (!isYouAgent(this.senderCard)) {
+      throw new Error('Only YouAgent cards can send follow requests');
+    }
     const followData: YouAgentFollowData = {
       type: 'youagent/follow',
       agentId: this.senderCard.youagent.id,
@@ -109,6 +113,9 @@ export class A2AClient {
 
   /** Send an unfollow notification. */
   async unfollow(agentUrl: string, agentId: string): Promise<Task> {
+    if (!isYouAgent(this.senderCard)) {
+      throw new Error('Only YouAgent cards can send unfollow requests');
+    }
     const unfollowData: YouAgentUnfollowData = {
       type: 'youagent/unfollow',
       agentId,
@@ -193,14 +200,15 @@ export class A2AClient {
   }
 
   private buildMessage(parts: Part[], contextId?: string): Message {
+    const { id, handle } = getAgentIdentifier(this.senderCard);
     return {
       role: 'user',
       parts,
       messageId: uuidv4(),
       contextId: contextId ?? uuidv4(),
       metadata: {
-        senderId: this.senderCard.youagent.id,
-        senderHandle: this.senderCard.youagent.handle,
+        senderId: id,
+        senderHandle: handle,
       },
     };
   }

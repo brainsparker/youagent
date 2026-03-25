@@ -4,27 +4,28 @@
 
 import type Database from 'better-sqlite3';
 import type { AgentCard } from '../types/agent-card.js';
+import { isYouAgent, getAgentIdentifier, getEffectiveInterests } from '../types/agent-card.js';
 
 interface AgentCardRow {
   id: string;
   handle: string;
   display_name: string;
   description: string | null;
-  interests: string;
+  interests: string | null;
   knowledge_domains: string | null;
-  cadence: string;
+  cadence: string | null;
   human_in_the_loop: string | null;
   capabilities: string | null;
   network: string | null;
   endpoints: string | null;
   meta: string | null;
+  card_type: string;
   created_at: string;
   updated_at: string;
 }
 
 function rowToAgentCard(row: AgentCardRow): AgentCard {
-  return {
-    // A2A base fields
+  const base: AgentCard = {
     name: row.display_name,
     description: row.description ?? '',
     url: 'http://localhost:3141',
@@ -38,18 +39,33 @@ function rowToAgentCard(row: AgentCardRow): AgentCard {
     skills: [],
     defaultInputModes: ['text/plain'],
     defaultOutputModes: ['text/plain'],
+  };
 
-    // YouAgent extensions
-    youagent: {
+  if (row.card_type !== 'external') {
+    // YouAgent card — reconstruct youagent extensions
+    base.youagent = {
       id: row.id,
       handle: row.handle,
-      interests: JSON.parse(row.interests),
+      interests: row.interests ? JSON.parse(row.interests) : [],
       knowledgeDomains: row.knowledge_domains ? JSON.parse(row.knowledge_domains) : undefined,
-      cadence: row.cadence,
+      cadence: row.cadence ?? '1d',
       humanInTheLoop: row.human_in_the_loop ? JSON.parse(row.human_in_the_loop) : undefined,
       network: row.network ? JSON.parse(row.network) : undefined,
-    },
-  };
+    };
+  } else {
+    // External card — reconstruct skills from stored interests/tags
+    const tags: string[] = row.interests ? JSON.parse(row.interests) : [];
+    if (tags.length > 0) {
+      base.skills = [{
+        id: 'general',
+        name: row.display_name,
+        description: row.description ?? '',
+        tags,
+      }];
+    }
+  }
+
+  return base;
 }
 
 export class AgentCardRepo {
@@ -61,24 +77,44 @@ export class AgentCardRepo {
 
   save(card: AgentCard): void {
     const stmt = this.db.prepare(`
-      INSERT INTO agent_cards (id, handle, display_name, description, interests, knowledge_domains, cadence, human_in_the_loop, capabilities, network, endpoints, meta)
-      VALUES (@id, @handle, @displayName, @description, @interests, @knowledgeDomains, @cadence, @humanInTheLoop, @capabilities, @network, @endpoints, @meta)
+      INSERT INTO agent_cards (id, handle, display_name, description, interests, knowledge_domains, cadence, human_in_the_loop, capabilities, network, endpoints, meta, card_type)
+      VALUES (@id, @handle, @displayName, @description, @interests, @knowledgeDomains, @cadence, @humanInTheLoop, @capabilities, @network, @endpoints, @meta, @cardType)
     `);
 
-    stmt.run({
-      id: card.youagent.id,
-      handle: card.youagent.handle,
-      displayName: card.name,
-      description: card.description ?? null,
-      interests: JSON.stringify(card.youagent.interests),
-      knowledgeDomains: card.youagent.knowledgeDomains ? JSON.stringify(card.youagent.knowledgeDomains) : null,
-      cadence: card.youagent.cadence,
-      humanInTheLoop: card.youagent.humanInTheLoop ? JSON.stringify(card.youagent.humanInTheLoop) : null,
-      capabilities: JSON.stringify(card.capabilities),
-      network: card.youagent.network ? JSON.stringify(card.youagent.network) : null,
-      endpoints: null,
-      meta: null,
-    });
+    if (isYouAgent(card)) {
+      stmt.run({
+        id: card.youagent.id,
+        handle: card.youagent.handle,
+        displayName: card.name,
+        description: card.description ?? null,
+        interests: JSON.stringify(card.youagent.interests),
+        knowledgeDomains: card.youagent.knowledgeDomains ? JSON.stringify(card.youagent.knowledgeDomains) : null,
+        cadence: card.youagent.cadence,
+        humanInTheLoop: card.youagent.humanInTheLoop ? JSON.stringify(card.youagent.humanInTheLoop) : null,
+        capabilities: JSON.stringify(card.capabilities),
+        network: card.youagent.network ? JSON.stringify(card.youagent.network) : null,
+        endpoints: null,
+        meta: null,
+        cardType: 'youagent',
+      });
+    } else {
+      const { id, handle } = getAgentIdentifier(card);
+      stmt.run({
+        id,
+        handle,
+        displayName: card.name,
+        description: card.description ?? null,
+        interests: JSON.stringify(getEffectiveInterests(card)),
+        knowledgeDomains: null,
+        cadence: null,
+        humanInTheLoop: null,
+        capabilities: JSON.stringify(card.capabilities),
+        network: null,
+        endpoints: null,
+        meta: null,
+        cardType: 'external',
+      });
+    }
   }
 
   findById(id: string): AgentCard | null {
@@ -105,24 +141,45 @@ export class AgentCardRepo {
           network = @network,
           endpoints = @endpoints,
           meta = @meta,
+          card_type = @cardType,
           updated_at = datetime('now')
       WHERE id = @id
     `);
 
-    stmt.run({
-      id: card.youagent.id,
-      handle: card.youagent.handle,
-      displayName: card.name,
-      description: card.description ?? null,
-      interests: JSON.stringify(card.youagent.interests),
-      knowledgeDomains: card.youagent.knowledgeDomains ? JSON.stringify(card.youagent.knowledgeDomains) : null,
-      cadence: card.youagent.cadence,
-      humanInTheLoop: card.youagent.humanInTheLoop ? JSON.stringify(card.youagent.humanInTheLoop) : null,
-      capabilities: JSON.stringify(card.capabilities),
-      network: card.youagent.network ? JSON.stringify(card.youagent.network) : null,
-      endpoints: null,
-      meta: null,
-    });
+    if (isYouAgent(card)) {
+      stmt.run({
+        id: card.youagent.id,
+        handle: card.youagent.handle,
+        displayName: card.name,
+        description: card.description ?? null,
+        interests: JSON.stringify(card.youagent.interests),
+        knowledgeDomains: card.youagent.knowledgeDomains ? JSON.stringify(card.youagent.knowledgeDomains) : null,
+        cadence: card.youagent.cadence,
+        humanInTheLoop: card.youagent.humanInTheLoop ? JSON.stringify(card.youagent.humanInTheLoop) : null,
+        capabilities: JSON.stringify(card.capabilities),
+        network: card.youagent.network ? JSON.stringify(card.youagent.network) : null,
+        endpoints: null,
+        meta: null,
+        cardType: 'youagent',
+      });
+    } else {
+      const { id, handle } = getAgentIdentifier(card);
+      stmt.run({
+        id,
+        handle,
+        displayName: card.name,
+        description: card.description ?? null,
+        interests: JSON.stringify(getEffectiveInterests(card)),
+        knowledgeDomains: null,
+        cadence: null,
+        humanInTheLoop: null,
+        capabilities: JSON.stringify(card.capabilities),
+        network: null,
+        endpoints: null,
+        meta: null,
+        cardType: 'external',
+      });
+    }
   }
 
   delete(id: string): void {

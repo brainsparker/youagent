@@ -3,6 +3,8 @@
 // ---------------------------------------------------------------------------
 
 import type { AgentCard } from "../types/agent-card.js";
+import { getAgentIdentifier } from "../types/agent-card.js";
+import { agentCardSchema } from "../schema/agent-card.schema.js";
 
 const DEFAULT_BASE_URL = "https://registry.youagent.dev";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -93,7 +95,7 @@ export class RegistryClient {
    * @param card  The updated agent card. Must include a valid `id`.
    */
   async updateAgent(card: AgentCard): Promise<void> {
-    await this.request(`${API_PREFIX}/${encodeURIComponent(card.youagent.id)}`, {
+    await this.request(`${API_PREFIX}/${encodeURIComponent(getAgentIdentifier(card).id)}`, {
       method: "PUT",
       body: JSON.stringify(card),
     });
@@ -129,6 +131,31 @@ export class RegistryClient {
       `${API_PREFIX}/discover?${params.toString()}`,
     );
     return data ?? [];
+  }
+
+  /**
+   * Register an external A2A agent by fetching its card from `/.well-known/agent.json`.
+   *
+   * @param agentUrl  The base URL of the remote agent.
+   * @returns The validated and registered agent card.
+   */
+  async registerExternal(agentUrl: string): Promise<AgentCard> {
+    const url = agentUrl.replace(/\/+$/, '');
+    const res = await fetch(`${url}/.well-known/agent.json`);
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new RegistryError(
+        `Failed to fetch agent card from ${url}: HTTP ${res.status} ${text}`,
+        res.status,
+        res.status >= 500,
+      );
+    }
+
+    const raw = await res.json();
+    const card = agentCardSchema.parse(raw) as unknown as AgentCard;
+    await this.register(card);
+    return card;
   }
 
   /**

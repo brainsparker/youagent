@@ -13,6 +13,7 @@ class Interest(BaseModel):
     cadence: str = "24h"
     priority: Literal["high", "medium", "low"] = "medium"
     last_polled: Optional[datetime] = None
+    source_types: list[str] = Field(default_factory=list)
 
     @field_validator("cadence")
     @classmethod

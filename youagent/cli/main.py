@@ -122,12 +122,14 @@ def init():
     table.add_column("Queries", style="white")
     table.add_column("Cadence", style="green")
     table.add_column("Priority")
+    table.add_column("Source Types", style="magenta")
     for interest in result.interests:
         table.add_row(
             interest.path,
             ", ".join(interest.queries[:2]) + ("..." if len(interest.queries) > 2 else ""),
             interest.cadence,
             interest.priority,
+            ", ".join(interest.source_types) if interest.source_types else "—",
         )
     console.print(table)
 
@@ -149,6 +151,7 @@ def init():
             agent.add_interest(Interest(
                 path=oi.path, queries=oi.queries,
                 cadence=oi.cadence, priority=oi.priority,
+                source_types=oi.source_types,
             ))
         await store.save_agent(agent)
         for interest in agent.card.x_youagent.interests:
@@ -164,15 +167,96 @@ def init():
             count = await run_search_for_interest(agent.id, interest, search_client, store)
             total += count
         await search_client.close()
+
+        # Auto-discover suggested agents
+        from youagent.a2a.registry import AgentRegistry
+        from youagent.network.follower import NetworkFollower
+        from youagent.a2a.client import A2AClient
+
+        registry = AgentRegistry(registry_path=YOUAGENT_HOME / "registry.json")
+        a2a_client = A2AClient()
+        follower = NetworkFollower(store, a2a_client)
+        suggestions = await follower.auto_discover(agent.id, registry)
+        await a2a_client.close()
+
         await store.close()
-        return agent, total
+        return agent, total, suggestions
 
     console.print("\n[dim]Creating agent and running first search...[/dim]")
-    agent, total = asyncio.run(_create())
+    agent, total, suggestions = asyncio.run(_create())
     console.print(f"\n[green]Created agent:[/green] {agent.name} (ID: {agent.id[:8]}...)")
     console.print(f"[green]First search found {total} items.[/green]")
+
+    if suggestions:
+        console.print(f"\n[bold cyan]Suggested agents to follow ({len(suggestions)}):[/bold cyan]")
+        for card in suggestions[:5]:
+            console.print(f"  • {card.name} — {card.description[:60]}")
+            console.print(f"    [dim]{card.endpoint}[/dim]")
+        console.print("\n[dim]Use 'youagent a2a follow <url>' to follow suggested agents.[/dim]")
+
     console.print("\nRun [bold]youagent start[/bold] to begin continuous monitoring.")
     console.print("Run [bold]youagent web[/bold] to open the dashboard.")
+
+
+@app.command()
+def respond(
+    feed_item_id: str = typer.Argument(..., help="Feed item ID to respond to"),
+    agent_id: str = typer.Option(None, "--agent", "-a", help="Agent ID"),
+):
+    """Run a deeper investigation on a timeline item and publish a response post."""
+    import asyncio
+
+    from rich.console import Console
+    from rich.panel import Panel
+
+    from youagent.config.defaults import DB_PATH
+    from youagent.config.settings import YouAgentSettings
+
+    console = Console()
+
+    async def _respond():
+        from youagent.knowledge.store import KnowledgeStore
+        from youagent.respond.engine import RespondEngine
+        from youagent.search.client import YouSearchClient
+        from youagent.synthesis.llm_client import create_llm_client
+
+        settings = YouAgentSettings.load()
+        llm_client = create_llm_client(settings)
+        if not llm_client:
+            console.print("[red]No LLM credentials configured. Run 'youagent init' first.[/red]")
+            return
+
+        store = KnowledgeStore(DB_PATH)
+        await store.initialize()
+
+        # Resolve agent
+        agents = await store.list_agents()
+        if not agents:
+            console.print("[red]No agents found. Run 'youagent init' to create one.[/red]")
+            return
+        if agent_id:
+            agent = next((a for a in agents if a.id.startswith(agent_id)), agents[0])
+        else:
+            agent = agents[0]
+
+        search_client = YouSearchClient(api_key=settings.youcom_api_key)
+        engine = RespondEngine(store, search_client, llm_client)
+
+        try:
+            result = await engine.respond(agent.id, feed_item_id)
+        finally:
+            await llm_client.close()
+            await search_client.close()
+            await store.close()
+
+        console.print(Panel(
+            f"[bold]{result['title']}[/bold]\n\n{result.get('summary', '')}",
+            title="Response Published",
+        ))
+        console.print(f"[green]Post ID:[/green] {result['post_id']}")
+        console.print(f"[green]Feed Item ID:[/green] {result['feed_item_id']}")
+
+    asyncio.run(_respond())
 
 
 @app.command()

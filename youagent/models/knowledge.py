@@ -34,4 +34,7 @@ class FeedItem(BaseModel):
     topic_path: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     read: bool = False
-    source_origin: str = "search"  # "search", "network", "synthesis"
+    source_origin: str = "search"  # "search", "network", "synthesis", "respond"
+    source_agent_id: str = ""
+    source_agent_name: str = ""
+    parent_post_id: str = ""

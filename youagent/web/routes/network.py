@@ -18,8 +18,23 @@ async def network_page(request: Request):
 
     # Get subscriptions (following list)
     subscriptions = []
+    suggestions = []
     if agent:
         subscriptions = await store.get_subscriptions(agent.id, active_only=False)
+        # Auto-discover suggested follows
+        if registry:
+            from youagent.a2a.client import A2AClient as _A2AClient
+            from youagent.network.follower import NetworkFollower
+            _client = _A2AClient()
+            follower = NetworkFollower(store, _client)
+            try:
+                suggestions = await follower.auto_discover(agent.id, registry)
+                # Exclude agents already being followed
+                followed_ids = {s["remote_agent_id"] for s in subscriptions}
+                suggestions = [c for c in suggestions if c.id not in followed_ids]
+            except Exception:
+                suggestions = []
+            await _client.close()
 
     return request.app.state.templates.TemplateResponse("network/index.html", {
         "request": request,
@@ -27,6 +42,7 @@ async def network_page(request: Request):
         "version": "0.1.0",
         "agents": agents,
         "subscriptions": subscriptions,
+        "suggestions": suggestions,
     })
 
 
@@ -103,6 +119,7 @@ async def follow_agent(
         "cadence": "6h",
         "last_polled": None,
         "active": 1,
+        "remote_agent_name": name,
     }
     await store.save_subscription(sub)
     return HTMLResponse(f'<p class="text-green-400">Now following {name}! Posts will appear in your timeline.</p>')

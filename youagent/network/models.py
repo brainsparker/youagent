@@ -18,6 +18,7 @@ class Subscription(BaseModel):
     cadence: str = "6h"
     last_polled: Optional[str] = None
     active: bool = True
+    remote_agent_name: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -29,6 +30,7 @@ class Subscription(BaseModel):
             "cadence": self.cadence,
             "last_polled": self.last_polled,
             "active": int(self.active),
+            "remote_agent_name": self.remote_agent_name,
         }
 
 
@@ -41,6 +43,7 @@ class Post(BaseModel):
     sources: list[str] = Field(default_factory=list)
     topic_path: str = ""
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    parent_post_id: str = ""
 
     def to_dict(self) -> dict:
         return self.model_dump()

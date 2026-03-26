@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from youagent.knowledge.store import KnowledgeStore
 from youagent.models.interest import Interest
-from youagent.scheduler.jobs import run_entity_extraction, run_network_poll, run_search_for_interest, run_synthesis_for_agent
+from youagent.scheduler.jobs import run_auto_discover, run_entity_extraction, run_network_poll, run_search_for_interest, run_synthesis_for_agent
 from youagent.search.client import YouSearchClient
 from youagent.synthesis.engine import SynthesisEngine
 from youagent.synthesis.llm_client import create_llm_client
@@ -55,6 +55,11 @@ class SchedulerEngine:
         from youagent.a2a.client import A2AClient
         self._a2a_client = A2AClient()
 
+        # Set up registry for auto-discovery
+        from youagent.a2a.registry import AgentRegistry
+        from youagent.config.defaults import YOUAGENT_HOME
+        self._registry = AgentRegistry(registry_path=YOUAGENT_HOME / "registry.json")
+
     async def add_agent_jobs(self, agent_id: str) -> int:
         interests = await self._store.list_interests(agent_id)
         for interest in interests:
@@ -96,7 +101,20 @@ class SchedulerEngine:
                 **interval,
             )
 
+        # Add auto-discovery job (every 24h)
+        self._scheduler.add_job(
+            self._run_auto_discover,
+            "interval",
+            kwargs={"agent_id": agent_id},
+            id=f"{agent_id}:auto_discover",
+            replace_existing=True,
+            hours=24,
+        )
+
         return len(interests)
+
+    async def _run_auto_discover(self, agent_id: str) -> None:
+        await run_auto_discover(agent_id, self._store, self._a2a_client, self._registry)
 
     async def _run_job(self, agent_id: str, interest: Interest) -> None:
         count = await run_search_for_interest(agent_id, interest, self._client, self._store)

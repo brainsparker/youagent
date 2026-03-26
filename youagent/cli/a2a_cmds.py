@@ -183,6 +183,7 @@ def follow(url: str):
             "cadence": "6h",
             "last_polled": None,
             "active": 1,
+            "remote_agent_name": card.name,
         }
         await store.save_subscription(sub)
         console.print(f"[green]Now following:[/green] {card.name} ({card.id[:8]}...)")
@@ -245,6 +246,7 @@ def following():
         return
 
     table = Table(title="Following")
+    table.add_column("Name", style="white")
     table.add_column("Agent ID", style="cyan", max_width=12)
     table.add_column("Endpoint")
     table.add_column("Cadence", style="green")
@@ -252,6 +254,7 @@ def following():
     table.add_column("Active")
     for sub in subs:
         table.add_row(
+            sub.get("remote_agent_name") or "—",
             sub["remote_agent_id"][:8] + "...",
             sub["remote_endpoint"],
             sub["cadence"],
@@ -259,6 +262,52 @@ def following():
             "[green]yes[/green]" if sub["active"] else "[red]no[/red]",
         )
     console.print(table)
+
+
+@a2a_app.command("discover-suggestions")
+def discover_suggestions():
+    """Show suggested agents to follow based on your interests."""
+    from youagent.a2a.client import A2AClient
+    from youagent.a2a.registry import AgentRegistry
+    from youagent.knowledge.store import KnowledgeStore
+    from youagent.network.follower import NetworkFollower
+
+    async def _discover():
+        store = KnowledgeStore(DB_PATH)
+        await store.initialize()
+        agents = await store.list_agents()
+        if not agents:
+            console.print("[red]No local agent. Run 'youagent init' first.[/red]")
+            return []
+        local_agent = agents[0]
+
+        registry = AgentRegistry(registry_path=YOUAGENT_HOME / "registry.json")
+        a2a_client = A2AClient()
+        follower = NetworkFollower(store, a2a_client)
+        suggestions = await follower.auto_discover(local_agent.id, registry)
+        await a2a_client.close()
+        await store.close()
+        return suggestions
+
+    suggestions = asyncio.run(_discover())
+    if not suggestions:
+        typer.echo("No suggestions found. Connect more agents with 'youagent a2a connect <url>'.")
+        return
+
+    table = Table(title="Suggested Follows")
+    table.add_column("Name", style="green")
+    table.add_column("ID", style="cyan", max_width=12)
+    table.add_column("Description")
+    table.add_column("Endpoint", style="dim")
+    for card in suggestions[:10]:
+        table.add_row(
+            card.name,
+            card.id[:8] + "...",
+            card.description[:60],
+            card.endpoint,
+        )
+    console.print(table)
+    console.print("\n[dim]Use 'youagent a2a follow <endpoint-url>' to follow.[/dim]")
 
 
 @a2a_app.command("ask")

@@ -128,6 +128,21 @@ async def run_entity_extraction(entry: KnowledgeEntry, store: KnowledgeStore, ll
         return 0
 
 
+async def run_auto_discover(agent_id: str, store: KnowledgeStore, a2a_client, registry) -> list:
+    """Scan registry for agents with overlapping interests. Returns suggestions."""
+    from youagent.network.follower import NetworkFollower
+
+    follower = NetworkFollower(store, a2a_client)
+    try:
+        suggestions = await follower.auto_discover(agent_id, registry)
+        if suggestions:
+            logger.info("Auto-discover found %d suggestions for agent %s", len(suggestions), agent_id[:8])
+        return suggestions
+    except Exception:
+        logger.exception("Auto-discover failed for agent %s", agent_id)
+        return []
+
+
 async def run_network_poll(subscription: dict, store: KnowledgeStore, a2a_client) -> int:
     """Poll a followed agent for new posts. Returns count of new items."""
     from youagent.network.follower import NetworkFollower

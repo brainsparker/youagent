@@ -58,7 +58,7 @@ class NetworkFollower:
             )
             await self.store.save_knowledge_entry(entry)
 
-            # Create FeedItem with network origin
+            # Create FeedItem with network origin and agent attribution
             feed_item = FeedItem(
                 agent_id=sub["agent_id"],
                 entry_id=entry.id,
@@ -66,6 +66,8 @@ class NetworkFollower:
                 body=post.get("summary", ""),
                 topic_path=post.get("topic_path", ""),
                 source_origin="network",
+                source_agent_id=sub["remote_agent_id"],
+                source_agent_name=sub.get("remote_agent_name", ""),
             )
             await self.store.save_feed_item(feed_item)
             count += 1

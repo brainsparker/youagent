@@ -142,6 +142,22 @@ class KnowledgeStore:
         await self._db.execute("PRAGMA foreign_keys = ON")
         await self._db.commit()
 
+        # Schema migrations for new columns
+        migrations = [
+            "ALTER TABLE interests ADD COLUMN source_types TEXT",
+            "ALTER TABLE feed_items ADD COLUMN source_agent_id TEXT DEFAULT ''",
+            "ALTER TABLE feed_items ADD COLUMN source_agent_name TEXT DEFAULT ''",
+            "ALTER TABLE feed_items ADD COLUMN parent_post_id TEXT DEFAULT ''",
+            "ALTER TABLE subscriptions ADD COLUMN remote_agent_name TEXT DEFAULT ''",
+            "ALTER TABLE posts ADD COLUMN parent_post_id TEXT",
+        ]
+        for sql in migrations:
+            try:
+                await self._db.execute(sql)
+            except Exception:
+                pass
+        await self._db.commit()
+
     async def close(self) -> None:
         if self._db:
             await self._db.close()
@@ -186,11 +202,12 @@ class KnowledgeStore:
 
     async def save_interest(self, agent_id: str, interest: Interest) -> None:
         queries_json = json.dumps(interest.queries) if interest.queries else None
+        source_types_json = json.dumps(interest.source_types) if interest.source_types else None
         last_polled = interest.last_polled.isoformat() if interest.last_polled else None
         await self._db.execute(
-            "INSERT OR REPLACE INTO interests (id, agent_id, path, queries, cadence, priority, last_polled) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO interests (id, agent_id, path, queries, cadence, priority, last_polled, source_types) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (interest.id, agent_id, interest.path, queries_json,
-             interest.cadence, interest.priority, last_polled),
+             interest.cadence, interest.priority, last_polled, source_types_json),
         )
         await self._db.commit()
 
@@ -201,9 +218,11 @@ class KnowledgeStore:
         ) as cursor:
             async for row in cursor:
                 queries = json.loads(row[3]) if row[3] else None
+                source_types = json.loads(row[7]) if len(row) > 7 and row[7] else []
                 interests.append(Interest(
                     id=row[0], path=row[2], queries=queries,
                     cadence=row[4], priority=row[5],
+                    source_types=source_types,
                 ))
         return interests
 
@@ -255,10 +274,11 @@ class KnowledgeStore:
 
     async def save_feed_item(self, item: FeedItem) -> None:
         await self._db.execute(
-            "INSERT INTO feed_items (id, agent_id, entry_id, headline, body, topic_path, created_at, read, source_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO feed_items (id, agent_id, entry_id, headline, body, topic_path, created_at, read, source_origin, source_agent_id, source_agent_name, parent_post_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (item.id, item.agent_id, item.entry_id, item.headline, item.body,
              item.topic_path, item.created_at.isoformat(), int(item.read),
-             item.source_origin),
+             item.source_origin, item.source_agent_id, item.source_agent_name,
+             item.parent_post_id),
         )
         await self._db.commit()
 
@@ -286,13 +306,50 @@ class KnowledgeStore:
         async with self._db.execute(query, params) as cursor:
             async for row in cursor:
                 source_origin = row[8] if len(row) > 8 and row[8] else "search"
+                source_agent_id = row[9] if len(row) > 9 and row[9] else ""
+                source_agent_name = row[10] if len(row) > 10 and row[10] else ""
+                parent_post_id = row[11] if len(row) > 11 and row[11] else ""
                 items.append(FeedItem(
                     id=row[0], agent_id=row[1], entry_id=row[2],
                     headline=row[3], body=row[4], topic_path=row[5],
                     created_at=row[6], read=bool(row[7]),
                     source_origin=source_origin,
+                    source_agent_id=source_agent_id,
+                    source_agent_name=source_agent_name,
+                    parent_post_id=parent_post_id,
                 ))
         return items
+
+    async def get_feed_item(self, item_id: str) -> Optional[FeedItem]:
+        async with self._db.execute("SELECT * FROM feed_items WHERE id = ?", (item_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            source_origin = row[8] if len(row) > 8 and row[8] else "search"
+            source_agent_id = row[9] if len(row) > 9 and row[9] else ""
+            source_agent_name = row[10] if len(row) > 10 and row[10] else ""
+            parent_post_id = row[11] if len(row) > 11 and row[11] else ""
+            return FeedItem(
+                id=row[0], agent_id=row[1], entry_id=row[2],
+                headline=row[3], body=row[4], topic_path=row[5],
+                created_at=row[6], read=bool(row[7]),
+                source_origin=source_origin,
+                source_agent_id=source_agent_id,
+                source_agent_name=source_agent_name,
+                parent_post_id=parent_post_id,
+            )
+
+    async def get_entry(self, entry_id: str) -> Optional[KnowledgeEntry]:
+        async with self._db.execute("SELECT * FROM knowledge_entries WHERE id = ?", (entry_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return KnowledgeEntry(
+                id=row[0], agent_id=row[1], interest_id=row[2],
+                title=row[3], summary=row[4], raw_content=row[5],
+                sources=json.loads(row[6]) if row[6] else [],
+                relevance=row[7], novelty=row[8], created_at=row[9],
+            )
 
     async def mark_read(self, feed_item_id: str) -> None:
         await self._db.execute("UPDATE feed_items SET read = 1 WHERE id = ?", (feed_item_id,))
@@ -376,11 +433,12 @@ class KnowledgeStore:
 
     async def save_post(self, post: dict) -> None:
         await self._db.execute(
-            "INSERT INTO posts (id, agent_id, entry_id, title, summary, sources, topic_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO posts (id, agent_id, entry_id, title, summary, sources, topic_path, created_at, parent_post_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (post["id"], post["agent_id"], post.get("entry_id"),
              post["title"], post["summary"],
              json.dumps(post.get("sources", [])),
-             post.get("topic_path", ""), post["created_at"]),
+             post.get("topic_path", ""), post["created_at"],
+             post.get("parent_post_id", "")),
         )
         await self._db.commit()
 
@@ -418,12 +476,13 @@ class KnowledgeStore:
 
     async def save_subscription(self, sub: dict) -> None:
         await self._db.execute(
-            "INSERT OR REPLACE INTO subscriptions (id, agent_id, remote_agent_id, remote_endpoint, topics, cadence, last_polled, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO subscriptions (id, agent_id, remote_agent_id, remote_endpoint, topics, cadence, last_polled, active, remote_agent_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (sub["id"], sub["agent_id"], sub["remote_agent_id"],
              sub["remote_endpoint"],
              json.dumps(sub.get("topics", [])),
              sub.get("cadence", "6h"),
-             sub.get("last_polled"), sub.get("active", 1)),
+             sub.get("last_polled"), sub.get("active", 1),
+             sub.get("remote_agent_name", "")),
         )
         await self._db.commit()
 
@@ -441,6 +500,7 @@ class KnowledgeStore:
                     "topics": json.loads(row[4]) if row[4] else [],
                     "cadence": row[5], "last_polled": row[6],
                     "active": bool(row[7]),
+                    "remote_agent_name": row[8] if len(row) > 8 and row[8] else "",
                 })
         return subs
 

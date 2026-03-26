@@ -15,11 +15,13 @@ Output a JSON object with:
   - "queries": array of 1-3 specific search queries for this interest
   - "cadence": polling interval ("6h", "12h", "24h") — use shorter cadence for fast-moving topics
   - "priority": "high", "medium", or "low"
+  - "source_types": array of preferred source types from: "news", "research_papers", "open_source_repos", "industry_analysis", "regulatory_filings", "social_media", "blogs"
 
 Rules:
 - Map user interests to the CLOSEST available taxonomy path
 - Generate specific, targeted search queries (not just the taxonomy path words)
 - Create 2-5 interests depending on the user's description
+- Infer source type preferences from context (e.g. academic topics → "research_papers", startup tracking → "news", "industry_analysis")
 - Output ONLY valid JSON, no other text"""
 
 

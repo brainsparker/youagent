@@ -18,7 +18,7 @@
   {% for sub in subscriptions %}
   <div class="bg-slate-800 rounded-lg p-3 border border-slate-700 flex justify-between items-center">
     <div>
-      <span class="text-white font-medium">{{ sub.remote_agent_id[:8] }}...</span>
+      <span class="text-white font-medium">{{ sub.remote_agent_name or sub.remote_agent_id[:8] ~ "..." }}</span>
       <span class="text-xs text-slate-500 ml-2">{{ sub.remote_endpoint }}</span>
       <span class="text-xs text-slate-500 ml-2">every {{ sub.cadence }}</span>
       {% if not sub.active %}
@@ -28,6 +28,38 @@
     <form hx-post="/network/unfollow/{{ sub.remote_agent_id }}" hx-target="closest div" hx-swap="outerHTML">
       <button class="text-xs text-red-400 hover:text-red-300">Unfollow</button>
     </form>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- Suggested Follows -->
+{% if suggestions %}
+<h3 class="text-lg font-semibold mb-3">Suggested Follows</h3>
+<div class="grid grid-cols-2 gap-4 mb-8">
+  {% for card in suggestions %}
+  <div class="bg-slate-800 rounded-lg p-4 border border-cyan-900">
+    <h3 class="font-semibold text-white">{{ card.name }}</h3>
+    <p class="text-sm text-slate-400 mt-1">{{ card.description }}</p>
+    <p class="text-xs text-slate-500 mt-1">{{ card.endpoint }}</p>
+    {% if card.skills %}
+    <div class="flex gap-1 mt-2 flex-wrap">
+      {% for skill in card.skills %}
+      {% for tag in skill.tags[:3] %}
+      <span class="tag bg-slate-700 text-slate-300">{{ tag }}</span>
+      {% endfor %}
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="mt-3" id="suggest-result-{{ card.id }}">
+      <form hx-post="/network/follow" hx-target="#suggest-result-{{ card.id }}" class="inline">
+        <input type="hidden" name="url" value="{{ card.endpoint }}">
+        <input type="hidden" name="agent_id" value="{{ card.id }}">
+        <input type="hidden" name="endpoint" value="{{ card.endpoint }}">
+        <input type="hidden" name="name" value="{{ card.name }}">
+        <button type="submit" class="bg-cyan-600 hover:bg-cyan-700 px-3 py-1 rounded text-sm text-white">Follow</button>
+      </form>
+    </div>
   </div>
   {% endfor %}
 </div>

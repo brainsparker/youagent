@@ -8,6 +8,7 @@ class OnboardingInterest(BaseModel):
     queries: list[str] = Field(default_factory=list)
     cadence: str = "24h"
     priority: str = "medium"
+    source_types: list[str] = Field(default_factory=list)
 
 
 class OnboardingResult(BaseModel):

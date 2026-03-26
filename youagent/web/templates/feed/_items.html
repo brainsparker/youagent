@@ -11,8 +11,10 @@
         {{ item.headline }}
       </h4>
       <div class="flex gap-1 flex-shrink-0">
-        {% if item.source_origin == "network" %}
-        <span class="tag bg-purple-900 text-purple-300 text-xs px-2 py-0.5 rounded">NETWORK</span>
+        {% if item.source_origin == "respond" %}
+        <span class="tag bg-green-900 text-green-300 text-xs px-2 py-0.5 rounded">RESPONSE</span>
+        {% elif item.source_origin == "network" %}
+        <span class="tag bg-purple-900 text-purple-300 text-xs px-2 py-0.5 rounded">@{{ item.source_agent_name or "network" }}</span>
         {% elif item.source_origin == "synthesis" %}
         <span class="tag bg-amber-900 text-amber-300 text-xs px-2 py-0.5 rounded">SYNTHESIS</span>
         {% endif %}
@@ -22,9 +24,16 @@
     <p class="text-slate-400 text-sm mt-2">{{ item.body }}</p>
     <div class="flex justify-between items-center mt-2">
       <p class="text-xs text-slate-500">{{ item.created_at[:19] }}</p>
-      <button onclick="event.stopPropagation(); fetch('/feed/{{ item.id }}/engage', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({event_type:'dismiss'})}); this.closest('.feed-item').style.opacity='0.3'"
-        class="text-xs text-slate-600 hover:text-slate-400">dismiss</button>
+      <div class="flex gap-3 items-center">
+        <button onclick="event.stopPropagation();"
+          hx-post="/feed/{{ item.id }}/respond" hx-target="#respond-result-{{ item.id }}" hx-indicator="#respond-loading-{{ item.id }}"
+          class="text-xs text-cyan-500 hover:text-cyan-400">Respond</button>
+        <button onclick="event.stopPropagation(); fetch('/feed/{{ item.id }}/engage', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({event_type:'dismiss'})}); this.closest('.feed-item').style.opacity='0.3'"
+          class="text-xs text-slate-600 hover:text-slate-400">dismiss</button>
+      </div>
     </div>
+    <div id="respond-loading-{{ item.id }}" class="htmx-indicator text-xs text-slate-400 mt-1">Investigating...</div>
+    <div id="respond-result-{{ item.id }}"></div>
   </div>
   {% endfor %}
 </div>

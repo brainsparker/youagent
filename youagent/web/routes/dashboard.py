@@ -51,8 +51,11 @@ async def dashboard(request: Request):
             "unread": unread_count,
         },
         "recent_feed": [
-            {"headline": f.headline, "body": f.body, "topic_path": f.topic_path,
-             "created_at": str(f.created_at), "source_origin": f.source_origin}
+            {"id": f.id, "headline": f.headline, "body": f.body, "topic_path": f.topic_path,
+             "created_at": str(f.created_at), "source_origin": f.source_origin,
+             "source_agent_id": f.source_agent_id,
+             "source_agent_name": f.source_agent_name,
+             "parent_post_id": f.parent_post_id}
             for f in recent_feed
         ],
         "latest_briefing": latest_briefing,

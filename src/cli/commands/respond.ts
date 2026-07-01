@@ -14,7 +14,7 @@ export function respondCommand(program: Command): void {
   program
     .command('respond <post-id>')
     .description('Investigate a post deeper and publish a Respond')
-    .option('--api-key <key>', 'You.com API key (or set YOU_API_KEY)')
+    .option('--api-key <key>', 'You.com API key (or set YDC_API_KEY)')
     .action(async (postId: string, opts: { apiKey?: string }) => {
       const card = await loadAgentCard();
       if (!card) {
@@ -22,9 +22,9 @@ export function respondCommand(program: Command): void {
         process.exit(1);
       }
 
-      const apiKey = opts.apiKey ?? process.env['YOU_API_KEY'];
+      const apiKey = opts.apiKey ?? process.env['YDC_API_KEY'];
       if (!apiKey) {
-        console.log(chalk.red('Missing API key. Set YOU_API_KEY or use --api-key.'));
+        console.log(chalk.red('Missing API key. Set YDC_API_KEY or use --api-key.'));
         process.exit(1);
       }
 

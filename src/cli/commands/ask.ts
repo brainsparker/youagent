@@ -10,7 +10,7 @@ export function askCommand(program: Command): void {
   program
     .command('ask <question>')
     .description('Ask your agent a question')
-    .option('--api-key <key>', 'You.com API key (or set YOU_API_KEY)')
+    .option('--api-key <key>', 'You.com API key (or set YDC_API_KEY)')
     .action(async (question: string, opts: { apiKey?: string }) => {
       const card = await loadAgentCard();
       if (!card) {
@@ -39,7 +39,7 @@ export function askCommand(program: Command): void {
       }
 
       // Also do a live search if API key available
-      const apiKey = opts.apiKey ?? process.env['YOU_API_KEY'];
+      const apiKey = opts.apiKey ?? process.env['YDC_API_KEY'];
       if (apiKey) {
         const client = new YouSearchClient({ apiKey });
         try {
@@ -56,7 +56,7 @@ export function askCommand(program: Command): void {
           client.dispose();
         }
       } else if (entities.length === 0) {
-        console.log(chalk.yellow('No knowledge found. Set YOU_API_KEY for live search.'));
+        console.log(chalk.yellow('No knowledge found. Set YDC_API_KEY for live search.'));
       }
 
       db.close();

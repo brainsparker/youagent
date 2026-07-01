@@ -7,12 +7,12 @@ export function searchCommand(program: Command): void {
   program
     .command('search <query>')
     .description('Run an ad-hoc search outside the regular cycle')
-    .option('--api-key <key>', 'You.com API key (or set YOU_API_KEY)')
+    .option('--api-key <key>', 'You.com API key (or set YDC_API_KEY)')
     .option('--limit <n>', 'Number of results', '5')
     .action(async (query: string, opts: { apiKey?: string; limit: string }) => {
-      const apiKey = opts.apiKey ?? process.env['YOU_API_KEY'];
+      const apiKey = opts.apiKey ?? process.env['YDC_API_KEY'];
       if (!apiKey) {
-        console.log(chalk.red('Missing API key. Set YOU_API_KEY or use --api-key.'));
+        console.log(chalk.red('Missing API key. Set YDC_API_KEY or use --api-key.'));
         process.exit(1);
       }
 

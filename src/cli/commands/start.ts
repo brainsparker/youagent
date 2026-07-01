@@ -8,15 +8,15 @@ export function startCommand(program: Command): void {
   program
     .command('start')
     .description('Start the agent daemon (runs in foreground)')
-    .option('-k, --api-key <key>', 'You.com API key (or set YOU_API_KEY env var)')
+    .option('-k, --api-key <key>', 'You.com API key (or set YDC_API_KEY env var)')
     .action(async (opts: { apiKey?: string }) => {
-      const apiKey = opts.apiKey ?? process.env['YOU_API_KEY'];
+      const apiKey = opts.apiKey ?? process.env['YDC_API_KEY'];
 
       if (!apiKey) {
         console.error(
           chalk.red('Missing API key. ') +
             chalk.dim('Set ') +
-            chalk.cyan('YOU_API_KEY') +
+            chalk.cyan('YDC_API_KEY') +
             chalk.dim(' env var or pass ') +
             chalk.cyan('--api-key <key>') +
             chalk.dim('.'),

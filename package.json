@@ -13,7 +13,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",
@@ -33,5 +34,32 @@
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brainsparker/youagent.git"
+  },
+  "homepage": "https://github.com/brainsparker/youagent#readme",
+  "bugs": {
+    "url": "https://github.com/brainsparker/youagent/issues"
+  },
+  "keywords": [
+    "agent",
+    "a2a",
+    "ai-agents",
+    "you.com",
+    "search",
+    "cli",
+    "agent-card",
+    "progressive-web-agents"
+  ]
 }

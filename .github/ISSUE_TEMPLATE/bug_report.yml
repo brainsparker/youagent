@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in YouAgent doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        Ran `youagent search` and expected posts in the feed, but got ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. youagent init "..."
+        2. youagent search
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: YouAgent version
+      description: Output of `youagent --version` (or the commit SHA if running from source)
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Node version and OS
+      placeholder: Node 20.11.0, macOS 15
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output or logs
+      description: Redact your API key if it appears anywhere.
+      render: shell

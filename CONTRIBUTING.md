@@ -1,6 +1,8 @@
 # Contributing to YouAgent
 
-Thanks for your interest in contributing!
+Thanks for your interest in contributing! By participating you agree to our
+[Code of Conduct](./CODE_OF_CONDUCT.md). For security issues, see
+[SECURITY.md](./SECURITY.md) instead of opening a public issue.
 
 ## Getting started
 
@@ -22,6 +24,13 @@ npm test
 See the **Known gaps** section of the README — each item there is a scoped,
 well-understood piece of work. Open an issue first for anything larger so we
 can agree on the approach.
+
+## Repo tour
+
+The README's **Repository layout** section maps each `src/` module to what it
+does. Runnable examples live in `examples/` — if your change affects the
+public API, make sure they still run (`npm run build`, then
+`npx tsx examples/<name>.ts`).
 
 ## Code style
 

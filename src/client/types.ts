@@ -6,7 +6,7 @@
 export interface YouClientConfig {
   /** You.com API key (YDC API). */
   apiKey: string;
-  /** Override the base URL (default: https://api.ydc-index.io). */
+  /** Override the base URL (default: https://ydc-index.io). */
   baseUrl?: string;
   /** Maximum requests per minute (default: 60). */
   rateLimit?: number;
@@ -51,9 +51,40 @@ export interface SearchResult {
   thumbnails: SearchResultThumbnail[];
 }
 
-/** Raw envelope returned by the /search endpoint. */
+/**
+ * Anything that can run a web search and return {@link SearchResult}s.
+ *
+ * Satisfied by both `YouSearchClient` (direct You.com key) and
+ * `NetworkSearchClient` (For You network's metered proxy), so consumers like
+ * the daemon can accept either.
+ */
+export interface SearchProvider {
+  search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
+  dispose(): void;
+}
+
+/** A raw hit as returned inside the /v1/search response arrays. */
+export interface RawSearchHit {
+  title?: string;
+  url?: string;
+  description?: string;
+  snippets?: string[];
+  thumbnails?: SearchResultThumbnail[];
+}
+
+/**
+ * Raw envelope returned by the search endpoint.
+ *
+ * The live You.com endpoint (https://ydc-index.io/v1/search) returns
+ * `{ results: { news, web } }`; the legacy `hits` shape is still parsed for
+ * compatibility with older deployments.
+ */
 export interface SearchApiResponse {
-  hits: SearchResultHit[];
+  hits?: SearchResultHit[];
+  results?: {
+    news?: RawSearchHit[];
+    web?: RawSearchHit[];
+  };
   latency?: number;
 }
 

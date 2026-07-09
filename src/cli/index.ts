@@ -15,6 +15,10 @@ import {
   searchCommand,
   askCommand,
   exportCommand,
+  registerCommand,
+  deregisterCommand,
+  pushCommand,
+  keyCommand,
 } from './commands/index.js';
 
 const program = new Command()
@@ -42,5 +46,11 @@ respondCommand(program);
 searchCommand(program);
 askCommand(program);
 exportCommand(program);
+
+// Register network commands
+registerCommand(program);
+deregisterCommand(program);
+pushCommand(program);
+keyCommand(program);
 
 program.parse();

@@ -10,3 +10,7 @@ export { respondCommand } from './respond.js';
 export { searchCommand } from './search.js';
 export { askCommand } from './ask.js';
 export { exportCommand } from './export.js';
+export { registerCommand } from './register.js';
+export { deregisterCommand } from './deregister.js';
+export { pushCommand } from './push.js';
+export { keyCommand } from './key.js';

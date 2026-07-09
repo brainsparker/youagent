@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { loadAgentCard } from '../utils.js';
-import { YouSearchClient } from '../../client/you-client.js';
+import { resolveSearchProvider } from '../utils.js';
 
 export function searchCommand(program: Command): void {
   program
@@ -10,15 +9,27 @@ export function searchCommand(program: Command): void {
     .option('--api-key <key>', 'You.com API key (or set YDC_API_KEY)')
     .option('--limit <n>', 'Number of results', '5')
     .action(async (query: string, opts: { apiKey?: string; limit: string }) => {
-      const apiKey = opts.apiKey ?? process.env['YDC_API_KEY'];
-      if (!apiKey) {
-        console.log(chalk.red('Missing API key. Set YDC_API_KEY or use --api-key.'));
+      const provider = await resolveSearchProvider(opts.apiKey);
+      if (!provider) {
+        console.log(
+          chalk.red('No search access. Set ') +
+            chalk.cyan('YDC_API_KEY') +
+            chalk.red(', use ') +
+            chalk.cyan('--api-key') +
+            chalk.red(', or run ') +
+            chalk.cyan('youagent register') +
+            chalk.red(' to search via the network.'),
+        );
         process.exit(1);
       }
 
-      const client = new YouSearchClient({ apiKey });
+      const { client, viaNetwork } = provider;
 
-      console.log(chalk.dim(`Searching: "${query}"...\n`));
+      console.log(
+        chalk.dim(
+          `Searching: "${query}"${viaNetwork ? ' (via network search proxy)' : ''}...\n`,
+        ),
+      );
 
       try {
         const results = await client.search(query, {

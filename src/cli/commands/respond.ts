@@ -7,6 +7,8 @@ import { YouSearchClient } from '../../client/you-client.js';
 import { FindingExtractorImpl } from '../../engine/finding-extractor.js';
 import { PostPublisher } from '../../engine/post-publisher.js';
 import { RespondHandler } from '../../engine/respond-handler.js';
+import { loadCredentials } from '../../registry/credentials.js';
+import { NetworkPusher } from '../../registry/pusher.js';
 import { join } from 'node:path';
 import { getAgentIdentifier } from '../../types/agent-card.js';
 
@@ -34,7 +36,12 @@ export function respondCommand(program: Command): void {
       const postRepo = new PostRepo(db.getDb());
       const searchClient = new YouSearchClient({ apiKey });
       const extractor = new FindingExtractorImpl(searchClient);
-      const publisher = new PostPublisher(postRepo, getAgentIdentifier(card).id);
+
+      // Push the respond post to the network too, when registered.
+      const creds = await loadCredentials();
+      const pusher = creds ? NetworkPusher.fromCredentials(creds) : undefined;
+
+      const publisher = new PostPublisher(postRepo, getAgentIdentifier(card).id, pusher);
       const handler = new RespondHandler(searchClient, extractor, publisher, postRepo);
 
       console.log(chalk.dim('Investigating post ' + postId + '...'));

@@ -18,6 +18,8 @@ import { QueryMapper } from '../engine/query-mapper.js';
 import { FindingExtractorImpl } from '../engine/finding-extractor.js';
 import type { Finding } from '../engine/finding-extractor.js';
 import { YouSearchClient } from '../client/you-client.js';
+import type { SearchProvider } from '../client/types.js';
+import type { NetworkPusher } from '../registry/pusher.js';
 import type { AgentCard } from '../types/agent-card.js';
 import { isYouAgent, getAgentIdentifier, getEffectiveInterests } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
@@ -29,8 +31,19 @@ import { shorthandToCron } from './cadence.js';
 
 /** Configuration options for the AgentDaemon. */
 export interface DaemonConfig {
-  /** You.com API key. */
-  apiKey: string;
+  /** You.com API key. Either this or `searchClient` is required. */
+  apiKey?: string;
+  /**
+   * Search provider to use instead of a direct You.com key — e.g. a
+   * `NetworkSearchClient` backed by the For You network's metered proxy.
+   * Takes precedence over `apiKey`.
+   */
+  searchClient?: SearchProvider;
+  /**
+   * When set, new posts from each search cycle are pushed to the network
+   * (best-effort; push failures never fail the cycle).
+   */
+  pusher?: NetworkPusher;
   /** Path to the agent-card.json file. Defaults to ~/.youagent/agent-card.json. */
   agentCardPath?: string;
   /** Path to the SQLite database. Defaults to ~/.youagent/youagent.db. */
@@ -45,21 +58,39 @@ const DEFAULT_AGENT_CARD_PATH = join(homedir(), '.youagent', 'agent-card.json');
 
 export class AgentDaemon {
   private db: AgentDatabase;
-  private searchClient: YouSearchClient;
+  private searchClient: SearchProvider;
   private queryMapper: QueryMapper;
   private extractor: FindingExtractorImpl;
+  private pusher?: NetworkPusher;
   private postRepo!: PostRepo;
   private cronJob: ReturnType<typeof cron.schedule> | null = null;
   private running: boolean = false;
 
   private readonly agentCardPath: string;
+  /** Whether the daemon created the search client (and should dispose it). */
+  private readonly ownsSearchClient: boolean;
 
   constructor(config: DaemonConfig) {
     this.agentCardPath = config.agentCardPath ?? DEFAULT_AGENT_CARD_PATH;
     this.db = new AgentDatabase(config.dbPath);
-    this.searchClient = new YouSearchClient({ apiKey: config.apiKey });
+
+    if (config.searchClient) {
+      this.searchClient = config.searchClient;
+      this.ownsSearchClient = false;
+    } else if (config.apiKey) {
+      this.searchClient = new YouSearchClient({ apiKey: config.apiKey });
+      this.ownsSearchClient = true;
+    } else {
+      throw new Error('AgentDaemon requires an apiKey or a searchClient.');
+    }
+
+    this.pusher = config.pusher;
     this.queryMapper = new QueryMapper();
-    this.extractor = new FindingExtractorImpl(this.searchClient);
+    // The extractor's RAG summarisation needs a full You.com client; with a
+    // proxy-backed provider it falls back to snippet truncation.
+    this.extractor = new FindingExtractorImpl(
+      this.searchClient instanceof YouSearchClient ? this.searchClient : undefined,
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -137,7 +168,10 @@ export class AgentDaemon {
       this.cronJob = null;
     }
 
-    this.searchClient.dispose();
+    // Injected clients belong to the caller — only dispose our own.
+    if (this.ownsSearchClient) {
+      this.searchClient.dispose();
+    }
     this.db.close();
     this.running = false;
 
@@ -157,6 +191,7 @@ export class AgentDaemon {
    * 4. Extract findings from the raw results.
    * 5. Deduplicate against the last 100 posts in the database.
    * 6. Convert unique findings to Post objects and persist them.
+   * 7. Push new posts to the network when a pusher is configured.
    *
    * @returns The newly created posts.
    */
@@ -218,6 +253,18 @@ export class AgentDaemon {
 
     for (const post of newPosts) {
       this.postRepo.save(post);
+    }
+
+    // 7. Best-effort push to the network; failures never fail the cycle.
+    if (this.pusher && newPosts.length > 0) {
+      try {
+        const result = await this.pusher.push(newPosts);
+        console.log(
+          `[AgentDaemon] Pushed to network — ${result.accepted}/${result.received} accepted.`,
+        );
+      } catch (err) {
+        console.error('[AgentDaemon] Network push failed:', err);
+      }
     }
 
     return newPosts;

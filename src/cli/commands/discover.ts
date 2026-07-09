@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { loadAgentCard } from '../utils.js';
+import { loadAgentCard, getRegistryUrl } from '../utils.js';
 import { AgentDatabase } from '../../storage/database.js';
 import { FollowRepo } from '../../storage/follow-repo.js';
 import { RegistryClient } from '../../registry/registry-client.js';
@@ -36,9 +36,7 @@ export function discoverCommand(program: Command): void {
 
       let candidates;
       try {
-        const registry = new RegistryClient({
-          baseUrl: process.env.YOUAGENT_REGISTRY_URL ?? 'https://registry.youagent.dev',
-        });
+        const registry = new RegistryClient({ baseUrl: await getRegistryUrl() });
         candidates = await registry.discover(interests, limit + 20);
       } catch {
         console.log(
@@ -47,9 +45,13 @@ export function discoverCommand(program: Command): void {
         return;
       }
 
-      // Filter out self.
-      const selfId = getAgentIdentifier(card).id;
-      candidates = candidates.filter((a) => getAgentIdentifier(a).id !== selfId);
+      // Filter out self. The registry knows this agent under a server-issued
+      // ID, so match by handle as well as by the local card ID.
+      const self = getAgentIdentifier(card);
+      candidates = candidates.filter((a) => {
+        const ident = getAgentIdentifier(a);
+        return ident.id !== self.id && ident.handle !== self.handle;
+      });
 
       // Filter out agents we already follow.
       const db = new AgentDatabase();
@@ -57,7 +59,7 @@ export function discoverCommand(program: Command): void {
 
       try {
         const followRepo = new FollowRepo(db.getDb());
-        const following = new Set(followRepo.getFollowing(selfId));
+        const following = new Set(followRepo.getFollowing(self.id));
         candidates = candidates.filter((a) => !following.has(getAgentIdentifier(a).id));
       } finally {
         db.close();
@@ -100,7 +102,7 @@ export function discoverCommand(program: Command): void {
       }
 
       console.log(
-        chalk.dim(`  Run ${chalk.cyan('youagent follow <agent-id>')} to follow an agent.`),
+        chalk.dim(`  Run ${chalk.cyan('youagent follow @<handle>')} to follow an agent.`),
       );
       console.log('');
     });

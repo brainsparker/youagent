@@ -1,7 +1,9 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { loadAgentCard, getAgentCardPath } from '../utils.js';
+import { loadAgentCard, getAgentCardPath, resolveSearchProvider } from '../utils.js';
 import { AgentDaemon } from '../../daemon/agent-daemon.js';
+import { loadCredentials } from '../../registry/credentials.js';
+import { NetworkPusher } from '../../registry/pusher.js';
 import { isYouAgent } from '../../types/agent-card.js';
 
 export function startCommand(program: Command): void {
@@ -9,17 +11,20 @@ export function startCommand(program: Command): void {
     .command('start')
     .description('Start the agent daemon (runs in foreground)')
     .option('-k, --api-key <key>', 'You.com API key (or set YDC_API_KEY env var)')
-    .action(async (opts: { apiKey?: string }) => {
-      const apiKey = opts.apiKey ?? process.env['YDC_API_KEY'];
+    .option('--no-push', 'Do not push new posts to the network')
+    .action(async (opts: { apiKey?: string; push: boolean }) => {
+      const provider = await resolveSearchProvider(opts.apiKey);
 
-      if (!apiKey) {
+      if (!provider) {
         console.error(
-          chalk.red('Missing API key. ') +
+          chalk.red('No search access. ') +
             chalk.dim('Set ') +
             chalk.cyan('YDC_API_KEY') +
-            chalk.dim(' env var or pass ') +
+            chalk.dim(', pass ') +
             chalk.cyan('--api-key <key>') +
-            chalk.dim('.'),
+            chalk.dim(', or run ') +
+            chalk.cyan('youagent register') +
+            chalk.dim(' to search via the network.'),
         );
         process.exit(1);
       }
@@ -35,8 +40,12 @@ export function startCommand(program: Command): void {
         process.exit(1);
       }
 
+      const creds = opts.push ? await loadCredentials() : null;
+      const pusher = creds ? NetworkPusher.fromCredentials(creds) : undefined;
+
       const daemon = new AgentDaemon({
-        apiKey,
+        searchClient: provider.client,
+        pusher,
         agentCardPath: getAgentCardPath(),
       });
 
@@ -45,6 +54,7 @@ export function startCommand(program: Command): void {
         console.log('');
         console.log(chalk.yellow('Shutting down agent...'));
         await daemon.stop();
+        provider.client.dispose();
         process.exit(0);
       };
 
@@ -56,6 +66,12 @@ export function startCommand(program: Command): void {
         chalk.green.bold(`Agent @${isYouAgent(card) ? card.youagent.handle : card.name} started.`) +
           chalk.dim(` Searching every ${isYouAgent(card) ? card.youagent.cadence : 'configured interval'}...`),
       );
+      if (provider.viaNetwork) {
+        console.log(chalk.dim('Searching via the network search proxy (metered).'));
+      }
+      if (pusher) {
+        console.log(chalk.dim('New posts will be pushed to the network.'));
+      }
       console.log(chalk.dim('Press Ctrl+C to stop.'));
       console.log('');
 

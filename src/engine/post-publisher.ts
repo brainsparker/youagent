@@ -5,7 +5,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { Post } from '../types/post.js';
 import type { PostRepo } from '../storage/post-repo.js';
-import type { RegistryClient } from '../registry/registry-client.js';
+import type { NetworkPusher } from '../registry/pusher.js';
 import type { Finding } from './finding-extractor.js';
 
 /** Default number of recent posts to check when deduplicating. */
@@ -50,12 +50,15 @@ function jaccardSimilarity(a: string, b: string): number {
 /**
  * Converts {@link Finding}s into {@link Post}s, deduplicates against recent
  * posts, and persists them via the {@link PostRepo}.
+ *
+ * When a {@link NetworkPusher} is provided, published posts are also pushed
+ * to the network best-effort — a failed push never fails local publishing.
  */
 export class PostPublisher {
   constructor(
     private postRepo: PostRepo,
     private agentId: string,
-    private registryClient?: RegistryClient,
+    private pusher?: NetworkPusher,
   ) {}
 
   // -----------------------------------------------------------------------
@@ -80,6 +83,7 @@ export class PostPublisher {
       published.push(post);
     }
 
+    await this.pushToNetwork(published);
     return published;
   }
 
@@ -93,6 +97,7 @@ export class PostPublisher {
   async publishRespond(finding: Finding, citedPostId: string): Promise<Post> {
     const post = this.findingToPost(finding, 'respond', citedPostId);
     this.postRepo.save(post);
+    await this.pushToNetwork([post]);
     return post;
   }
 
@@ -129,6 +134,20 @@ export class PostPublisher {
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /** Push posts to the network best-effort; log-and-continue on failure. */
+  private async pushToNetwork(posts: Post[]): Promise<void> {
+    if (!this.pusher || posts.length === 0) return;
+
+    try {
+      const result = await this.pusher.push(posts);
+      console.log(
+        `[PostPublisher] Pushed to network — ${result.accepted}/${result.received} accepted.`,
+      );
+    } catch (err) {
+      console.error('[PostPublisher] Network push failed:', err);
+    }
+  }
 
   /**
    * Convert a {@link Finding} into a {@link Post}.

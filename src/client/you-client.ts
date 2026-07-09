@@ -11,6 +11,7 @@ import {
   type ContentsApiResponse,
   type ContentsOptions,
   type ContentsResult,
+  type RawSearchHit,
   type ResearchApiResponse,
   type ResearchOptions,
   type ResearchResult,
@@ -20,7 +21,7 @@ import {
   type YouClientConfig,
 } from "./types.js";
 
-const DEFAULT_BASE_URL = "https://api.ydc-index.io";
+const DEFAULT_BASE_URL = "https://ydc-index.io";
 const DEFAULT_RATE_LIMIT = 60;
 const DEFAULT_RETRIES = 3;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -64,7 +65,11 @@ export class YouSearchClient {
   // -----------------------------------------------------------------------
 
   /**
-   * Search the web via the You.com Search API.
+   * Search the web via the You.com Search API (`/v1/search`).
+   *
+   * Returns news results first, then web results, matching the endpoint's
+   * `{ results: { news, web } }` envelope. The legacy `hits` envelope is
+   * still parsed for older deployments reached via a custom `baseUrl`.
    *
    * @param query  The search query string.
    * @param options  Optional search parameters.
@@ -76,7 +81,7 @@ export class YouSearchClient {
   ): Promise<SearchResult[]> {
     const params = new URLSearchParams({ query });
     if (options?.numResults !== undefined) {
-      params.set("num_web_results", String(options.numResults));
+      params.set("count", String(options.numResults));
     }
     if (options?.country) {
       params.set("country", options.country);
@@ -86,8 +91,24 @@ export class YouSearchClient {
     }
 
     const data = await this.request<SearchApiResponse>(
-      `/search?${params.toString()}`,
+      `/v1/search?${params.toString()}`,
     );
+
+    if (data.results) {
+      const hits = [
+        ...(data.results.news ?? []),
+        ...(data.results.web ?? []),
+      ];
+      return hits
+        .filter((hit) => hit.url && hit.title)
+        .map((hit: RawSearchHit) => ({
+          title: hit.title ?? "",
+          url: hit.url ?? "",
+          snippet: hit.snippets?.[0] ?? hit.description ?? "",
+          description: hit.description ?? "",
+          thumbnails: hit.thumbnails ?? [],
+        }));
+    }
 
     return (data.hits ?? []).map((hit) => ({
       title: hit.title,

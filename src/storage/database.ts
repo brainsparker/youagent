@@ -9,13 +9,39 @@ import { homedir } from 'node:os';
 
 const DEFAULT_DB_PATH = join(homedir(), '.youagent', 'youagent.db');
 
+/**
+ * Detect failures caused by a missing or incompatible better-sqlite3
+ * native binding, as opposed to ordinary database errors.
+ */
+function isNativeModuleError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'ERR_DLOPEN_FAILED' || code === 'MODULE_NOT_FOUND') return true;
+  return /better_sqlite3\.node|Could not locate the bindings file|NODE_MODULE_VERSION/i.test(
+    err.message
+  );
+}
+
 export class AgentDatabase {
   private db: Database.Database;
 
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? DEFAULT_DB_PATH;
     mkdirSync(dirname(resolvedPath), { recursive: true });
-    this.db = new Database(resolvedPath);
+    try {
+      this.db = new Database(resolvedPath);
+    } catch (err) {
+      if (isNativeModuleError(err)) {
+        throw new Error(
+          'youagent could not load its SQLite engine (better-sqlite3). ' +
+            'The native module is missing or was built for a different Node.js version.\n' +
+            'To fix, run: npm rebuild better-sqlite3\n' +
+            'Or reinstall youagent on Node.js 20 or newer so a prebuilt binary can be used.\n' +
+            `Original error: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      throw err;
+    }
 
     // Enable WAL mode for better concurrent read performance.
     this.db.pragma('journal_mode = WAL');

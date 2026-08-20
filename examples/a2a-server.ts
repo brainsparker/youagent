@@ -2,7 +2,7 @@
  * Serve an agent over the A2A protocol.
  *
  * Once running, try:
- *   curl http://localhost:3141/.well-known/agent.json
+ *   curl http://localhost:3141/.well-known/agent-card.json
  *   curl http://localhost:3141/health
  *
  * Usage: npx tsx examples/a2a-server.ts
@@ -31,4 +31,4 @@ server.registerYouAgentHandlers({
 
 await server.start();
 console.log('A2A server listening on http://localhost:3141');
-console.log('Agent card: http://localhost:3141/.well-known/agent.json');
+console.log('Agent card: http://localhost:3141/.well-known/agent-card.json');

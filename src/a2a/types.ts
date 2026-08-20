@@ -37,26 +37,42 @@ export type A2AMethod =
   | 'tasks/resubscribe';
 
 export interface TextPart {
-  type: 'text';
+  kind: 'text';
   text: string;
   metadata?: Record<string, unknown>;
 }
 
 export interface FilePart {
-  type: 'file';
+  kind: 'file';
   file: { name?: string; mimeType?: string; uri?: string; bytes?: string };
   metadata?: Record<string, unknown>;
 }
 
 export interface DataPart {
-  type: 'data';
+  kind: 'data';
   data: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
 
 export type Part = TextPart | FilePart | DataPart;
 
+/**
+ * Legacy part shapes emitted by youagent <= 0.1, which used a `type`
+ * discriminator. The A2A spec has always used `kind` (v0.1 through v0.3.x),
+ * so these exist only so older youagent peers keep working. Accepted on
+ * ingest via `normalizePart`, never emitted.
+ */
+export type LegacyPart =
+  | (Omit<TextPart, 'kind'> & { type: 'text' })
+  | (Omit<FilePart, 'kind'> & { type: 'file' })
+  | (Omit<DataPart, 'kind'> & { type: 'data' });
+
+/** A part as it may arrive off the wire: spec-shaped or legacy-shaped. */
+export type WirePart = Part | LegacyPart;
+
 export interface Message {
+  /** A2A v0.3 object discriminator. Always emitted; tolerated missing on ingest. */
+  kind: 'message';
   role: 'user' | 'agent';
   parts: Part[];
   messageId: string;
@@ -81,6 +97,8 @@ export interface TaskStatus {
 }
 
 export interface Task {
+  /** A2A v0.3 object discriminator. Always emitted; tolerated missing on ingest. */
+  kind: 'task';
   id: string;
   contextId: string;
   status: TaskStatus;
@@ -90,6 +108,8 @@ export interface Task {
 }
 
 export interface Artifact {
+  /** Required unique artifact identifier per A2A v0.3. Generated when a legacy peer omits it. */
+  artifactId: string;
   name?: string;
   description?: string;
   parts: Part[];

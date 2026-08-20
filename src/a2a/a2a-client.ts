@@ -6,6 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
 import { isYouAgent, getAgentIdentifier } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
+import { normalizeTask } from './compat.js';
+import { fetchAgentCardJson } from './discovery.js';
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -41,7 +43,7 @@ export class A2AClient {
       throw new Error(`message/send failed: ${response.error.message}`);
     }
 
-    return response.result as Task;
+    return normalizeTask(response.result);
   }
 
   /** Get a task by ID from a remote agent. */
@@ -53,7 +55,7 @@ export class A2AClient {
       throw new Error(`tasks/get failed: ${response.error.message}`);
     }
 
-    return response.result as Task;
+    return normalizeTask(response.result);
   }
 
   /** Cancel a task on a remote agent. */
@@ -65,20 +67,18 @@ export class A2AClient {
       throw new Error(`tasks/cancel failed: ${response.error.message}`);
     }
 
-    return response.result as Task;
+    return normalizeTask(response.result);
   }
 
-  /** Discover a remote agent by fetching its agent card. */
+  /**
+   * Discover a remote agent by fetching its agent card.
+   *
+   * Tries the canonical /.well-known/agent-card.json (A2A >= 0.3.0) first,
+   * then falls back to the legacy /.well-known/agent.json.
+   */
   async discover(agentUrl: string): Promise<AgentCard> {
-    const url = agentUrl.replace(/\/+$/, '');
-    const res = await fetch(`${url}/.well-known/agent.json`);
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Discovery failed (HTTP ${res.status}): ${text}`);
-    }
-
-    return (await res.json()) as AgentCard;
+    const { card } = await fetchAgentCardJson(agentUrl);
+    return card as AgentCard;
   }
 
   /** Ping a remote agent. */
@@ -105,7 +105,7 @@ export class A2AClient {
       handle: this.senderCard.youagent.handle,
     };
     const dataPart: DataPart = {
-      type: 'data',
+      kind: 'data',
       data: followData as unknown as Record<string, unknown>,
     };
     return this.sendMessage(agentUrl, [dataPart]);
@@ -121,7 +121,7 @@ export class A2AClient {
       agentId,
     };
     const dataPart: DataPart = {
-      type: 'data',
+      kind: 'data',
       data: unfollowData as unknown as Record<string, unknown>,
     };
     return this.sendMessage(agentUrl, [dataPart]);
@@ -135,7 +135,7 @@ export class A2AClient {
       limit,
     };
     const dataPart: DataPart = {
-      type: 'data',
+      kind: 'data',
       data: requestData as unknown as Record<string, unknown>,
     };
     const task = await this.sendMessage(agentUrl, [dataPart]);
@@ -144,7 +144,7 @@ export class A2AClient {
     if (task.artifacts) {
       for (const artifact of task.artifacts) {
         for (const part of artifact.parts) {
-          if (part.type === 'data') {
+          if (part.kind === 'data') {
             const payload = part.data as unknown as YouAgentPostsResponseData;
             if (payload.type === 'youagent/posts-response') {
               return payload.posts;
@@ -159,7 +159,7 @@ export class A2AClient {
 
   /** Send a text message to another agent. */
   async sendText(agentUrl: string, text: string, contextId?: string): Promise<Task> {
-    const textPart: TextPart = { type: 'text', text };
+    const textPart: TextPart = { kind: 'text', text };
     return this.sendMessage(agentUrl, [textPart], contextId);
   }
 
@@ -202,6 +202,7 @@ export class A2AClient {
   private buildMessage(parts: Part[], contextId?: string): Message {
     const { id, handle } = getAgentIdentifier(this.senderCard);
     return {
+      kind: 'message',
       role: 'user',
       parts,
       messageId: uuidv4(),

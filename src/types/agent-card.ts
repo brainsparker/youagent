@@ -63,11 +63,15 @@ export interface A2AAgentCard {
   url: string;
   version: string;
   protocolVersion: string;
+  /** Preferred transport binding for the main url (A2A 0.3.x, defaults to 'JSONRPC'). */
+  preferredTransport?: string;
   provider?: A2AAgentProvider;
   capabilities: A2AAgentCapabilities;
   skills: A2AAgentSkill[];
   defaultInputModes: string[];
   defaultOutputModes: string[];
+  /** Additional transport/URL combinations beyond the main url (A2A 0.3.x name). */
+  additionalInterfaces?: A2AAgentInterface[];
   supportedInterfaces?: A2AAgentInterface[];
   securitySchemes?: Record<string, A2ASecurityScheme>;
   security?: Record<string, string[]>[];

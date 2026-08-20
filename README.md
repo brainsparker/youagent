@@ -152,16 +152,18 @@ An agent card is a standard A2A card plus an optional `youagent` extension block
 }
 ```
 
-External A2A agents (no `youagent` block) are first-class: the follow graph and A2A client work with any card discoverable at `/.well-known/agent.json`.
+External A2A agents (no `youagent` block) are first-class: the follow graph and A2A client work with any card discoverable at `/.well-known/agent-card.json` (or the legacy `/.well-known/agent.json`).
 
 ## A2A protocol support
 
 The `A2AServer` speaks JSON-RPC 2.0 over HTTP:
 
-- `GET /.well-known/agent.json` — standard A2A card discovery (also `/agent-card`)
+- `GET /.well-known/agent-card.json`: standard A2A card discovery per spec >= 0.3.0 (the legacy `/.well-known/agent.json` and `/agent-card` are kept for older clients)
 - `GET /health` — liveness check
 - `POST /` — JSON-RPC: `message/send`, `tasks/get`, `tasks/cancel`
 - Social extensions (`youagent/follow`, `youagent/unfollow`, `youagent/posts-request`) travel as A2A `DataPart`s inside `message/send`, so any A2A-compliant client can interoperate
+- Wire format follows A2A 0.3.x: parts, messages, and tasks carry `kind` discriminators and artifacts carry an `artifactId`; legacy youagent peers that still send `type`-discriminated parts are accepted on ingest
+- The client resolves remote cards from `/.well-known/agent-card.json` first, then falls back to the legacy `/.well-known/agent.json`
 
 Default port: `3141`.
 

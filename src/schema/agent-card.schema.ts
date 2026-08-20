@@ -146,7 +146,8 @@ export const agentCardSchema = z.object({
   description: z.string().min(1),
   url: z.string().url(),
   version: z.string().default('0.1.0'),
-  protocolVersion: z.string().default('0.2.1'),
+  protocolVersion: z.string().default('0.3.0'),
+  preferredTransport: z.string().default('JSONRPC'),
   provider: a2aProviderSchema.optional(),
   capabilities: a2aCapabilitiesSchema.default({
     streaming: false,
@@ -156,6 +157,7 @@ export const agentCardSchema = z.object({
   skills: z.array(a2aSkillSchema).default([]),
   defaultInputModes: z.array(z.string()).default(['text/plain']),
   defaultOutputModes: z.array(z.string()).default(['text/plain']),
+  additionalInterfaces: z.array(a2aInterfaceSchema).optional(),
   supportedInterfaces: z.array(a2aInterfaceSchema).optional(),
   securitySchemes: z.record(a2aSecuritySchemeSchema).optional(),
   security: z.array(z.record(z.array(z.string()))).optional(),

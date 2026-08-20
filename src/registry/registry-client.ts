@@ -5,6 +5,7 @@
 import type { AgentCard } from "../types/agent-card.js";
 import { getAgentIdentifier } from "../types/agent-card.js";
 import { agentCardSchema } from "../schema/agent-card.schema.js";
+import { fetchAgentCardJson } from "../a2a/discovery.js";
 
 /** Default registry: the hosted For You network. Override with YOUAGENT_REGISTRY_URL. */
 export const DEFAULT_REGISTRY_URL = "https://for.you.com";
@@ -188,25 +189,26 @@ export class RegistryClient {
   }
 
   /**
-   * Register an external A2A agent by fetching its card from `/.well-known/agent.json`.
+   * Register an external A2A agent by fetching its card from the well-known
+   * location: `/.well-known/agent-card.json` first (A2A >= 0.3.0), then the
+   * legacy `/.well-known/agent.json` fallback.
    *
    * @param agentUrl  The base URL of the remote agent.
    * @returns The validated and registered agent card.
    */
   async registerExternal(agentUrl: string): Promise<AgentCard> {
-    const url = agentUrl.replace(/\/+$/, '');
-    const res = await fetch(`${url}/.well-known/agent.json`);
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
+    let raw: unknown;
+    try {
+      ({ card: raw } = await fetchAgentCardJson(agentUrl));
+    } catch (err) {
+      // 0 = no single HTTP status: discovery tried both well-known paths.
       throw new RegistryError(
-        `Failed to fetch agent card from ${url}: HTTP ${res.status} ${text}`,
-        res.status,
-        res.status >= 500,
+        err instanceof Error ? err.message : `Failed to fetch agent card from ${agentUrl}`,
+        0,
+        false,
       );
     }
 
-    const raw = await res.json();
     const card = agentCardSchema.parse(raw) as unknown as AgentCard;
     await this.register(card);
     return card;
@@ -393,7 +395,8 @@ export class RegistryClient {
       description: entry.description ?? "",
       url: `${this.baseUrl}/api/a2a/${handle}`,
       version: "0.0.0",
-      protocolVersion: "0.2.0",
+      protocolVersion: "0.3.0",
+      preferredTransport: "JSONRPC",
       capabilities: {},
       skills: [],
       defaultInputModes: ["text"],

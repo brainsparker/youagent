@@ -6,6 +6,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
+import { normalizeMessage } from './compat.js';
+import { AGENT_CARD_PATH, LEGACY_AGENT_CARD_PATH } from './discovery.js';
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -14,7 +16,6 @@ import type {
   Task,
   TaskStatus,
   Artifact,
-  Part,
   DataPart,
   MessageSendParams,
   TaskQueryParams,
@@ -30,9 +31,12 @@ export type A2AMethodHandler = (params: unknown, request: JsonRpcRequest) => Pro
 
 /** Configuration for the A2A server. */
 export interface A2AServerConfig {
-  /** Port to listen on. Defaults to 3141. */
+  /** Port to listen on. Defaults to 3141. Pass 0 to bind an ephemeral port. */
   port?: number;
-  /** The agent card to serve at GET /.well-known/agent.json. */
+  /**
+   * The agent card to serve at GET /.well-known/agent-card.json
+   * (and the deprecated legacy path /.well-known/agent.json).
+   */
   agentCard: AgentCard;
 }
 
@@ -69,11 +73,13 @@ export class A2AServer {
     onMessage?: (message: Message) => Promise<Message>;
   }): void {
     this.onMethod('message/send', async (params: unknown) => {
-      const { message } = params as MessageSendParams;
+      const { message: rawMessage } = params as MessageSendParams;
+      // Accept both spec-shaped (`kind`) and legacy (`type`) parts on ingest.
+      const message = normalizeMessage(rawMessage);
 
       // Find YouAgent DataParts and route to social handlers
       for (const part of message.parts) {
-        if (part.type === 'data') {
+        if (part.kind === 'data') {
           const dataType = (part.data as Record<string, unknown>).type as string | undefined;
 
           if (dataType === 'youagent/follow' && options.onFollow) {
@@ -96,10 +102,11 @@ export class A2AServer {
               posts,
             };
             const artifact: Artifact = {
+              artifactId: uuidv4(),
               name: 'posts',
               parts: [
                 {
-                  type: 'data',
+                  kind: 'data',
                   data: responseData as unknown as Record<string, unknown>,
                 } satisfies DataPart,
               ],
@@ -154,6 +161,15 @@ export class A2AServer {
     });
   }
 
+  /**
+   * The port the server is actually bound to, or undefined when not
+   * listening. Useful with `port: 0` (ephemeral port) in tests.
+   */
+  get listeningPort(): number | undefined {
+    const address = this.server.address();
+    return address !== null && typeof address === 'object' ? address.port : undefined;
+  }
+
   /** Stop the server gracefully. */
   async stop(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -188,6 +204,7 @@ export class A2AServer {
     }
 
     const task: Task = {
+      kind: 'task',
       id: taskId,
       contextId,
       status,
@@ -209,8 +226,13 @@ export class A2AServer {
       return;
     }
 
-    // GET /.well-known/agent.json (A2A standard discovery)
-    if (method === 'GET' && (url === '/.well-known/agent.json' || url === '/agent-card')) {
+    // GET /.well-known/agent-card.json (A2A standard discovery, spec >= 0.3.0).
+    // The legacy /.well-known/agent.json path (spec <= 0.2.x) and the
+    // /agent-card convenience alias are kept for older clients.
+    if (
+      method === 'GET' &&
+      (url === AGENT_CARD_PATH || url === LEGACY_AGENT_CARD_PATH || url === '/agent-card')
+    ) {
       this.sendJson(res, 200, this.config.agentCard);
       return;
     }

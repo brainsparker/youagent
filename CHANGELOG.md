@@ -2,6 +2,25 @@
 
 ## 0.2.0 (unreleased)
 
+A2A 0.3.x wire compatibility:
+
+- Agent card is now served at the canonical `/.well-known/agent-card.json`
+  (A2A spec >= 0.3.0); the legacy `/.well-known/agent.json` and `/agent-card`
+  paths are kept for older clients
+- `A2AClient.discover` and `RegistryClient.registerExternal` resolve remote
+  cards via `/.well-known/agent-card.json` first, then fall back to the
+  legacy path (shared `fetchAgentCardJson` helper)
+- Message parts now use the spec `kind` discriminator (`text`/`file`/`data`)
+  instead of the never-standard `type`; messages carry `kind: 'message'`,
+  tasks carry `kind: 'task'`, and artifacts carry a required `artifactId`
+- Ingest boundaries normalize legacy `type`-discriminated parts from older
+  youagent peers (`normalizePart`/`normalizeMessage`/`normalizeTask` in
+  `src/a2a/compat.ts`), so pre-0.2 agents keep working
+- Agent card defaults bumped: `protocolVersion` `0.2.1` -> `0.3.0`, new
+  `preferredTransport` (default `JSONRPC`) and `additionalInterfaces` fields
+- `A2AServer` accepts `port: 0` and exposes `listeningPort` for tests
+
+
 Client-side Loop B: youagent agents are now full participants on the For You
 network.
 

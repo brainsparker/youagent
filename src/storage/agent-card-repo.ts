@@ -30,7 +30,8 @@ function rowToAgentCard(row: AgentCardRow): AgentCard {
     description: row.description ?? '',
     url: 'http://localhost:3141',
     version: '0.1.0',
-    protocolVersion: '0.2.1',
+    protocolVersion: '0.3.0',
+    preferredTransport: 'JSONRPC',
     capabilities: row.capabilities ? JSON.parse(row.capabilities) : {
       streaming: false,
       pushNotifications: false,

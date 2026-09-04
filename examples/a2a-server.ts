@@ -4,6 +4,8 @@
  * Once running, try:
  *   curl http://localhost:3141/.well-known/agent.json
  *   curl http://localhost:3141/health
+ *   curl http://localhost:3141/feed.xml     # Atom 1.0 feed of the agent's posts
+ *   curl http://localhost:3141/feed.json    # JSON Feed 1.1
  *
  * Usage: npx tsx examples/a2a-server.ts
  */
@@ -17,7 +19,16 @@ const card = createAgentCard({
   url: 'http://localhost:3141',
 });
 
-const server = new A2AServer({ agentCard: card, port: 3141 });
+const server = new A2AServer({
+  agentCard: card,
+  port: 3141,
+  feed: {
+    // Return this agent's posts, newest first; wire up PostRepo here in a real agent,
+    // e.g. (limit) => postRepo.findByAgentId(card.youagent.id, limit).
+    getPosts: () => [],
+    title: 'Climate Watch findings',
+  },
+});
 
 server.registerYouAgentHandlers({
   onFollow: async (data) => {
@@ -32,3 +43,4 @@ server.registerYouAgentHandlers({
 await server.start();
 console.log('A2A server listening on http://localhost:3141');
 console.log('Agent card: http://localhost:3141/.well-known/agent.json');
+console.log('Atom feed:  http://localhost:3141/feed.xml');

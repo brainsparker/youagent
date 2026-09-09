@@ -8,8 +8,35 @@ export type {
   HumanInTheLoop,
   Interest,
   SourceType,
+  YouAgentExtensions,
+  A2AAgentCard,
+  A2AAgentCapabilities,
+  A2AAgentCardSignature,
+  A2AAgentExtension,
+  A2AAgentInterface,
+  A2AAgentProvider,
+  A2AAgentSkill,
+  A2ASecurityRequirement,
+  A2ASecurityScheme,
 } from './agent-card.js';
 
-export { isYouAgent, getEffectiveInterests, getAgentIdentifier } from './agent-card.js';
+export {
+  isYouAgent,
+  getEffectiveInterests,
+  getAgentIdentifier,
+  getAgentUrl,
+  getPrimaryInterface,
+  normalizeAgentCard,
+  toProtocolBinding,
+  toV1AgentCard,
+  A2A_CARD_VERSION,
+  A2A_JSONRPC_PROTOCOL_VERSION,
+  A2A_BINDING_JSONRPC,
+  A2A_BINDING_GRPC,
+  A2A_BINDING_HTTP_JSON,
+  A2A_WELL_KNOWN_PATH,
+  A2A_LEGACY_WELL_KNOWN_PATH,
+  A2A_CARD_MEDIA_TYPE,
+} from './agent-card.js';
 
 export type { Post, PostType } from './post.js';

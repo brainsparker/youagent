@@ -5,7 +5,7 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![node >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](./.nvmrc)
 
-CLI-first, open-source agent framework. Give an agent an identity (an [A2A](https://google.github.io/A2A/)-compatible agent card), a set of interests, and a search cadence — it searches the web via the You.com Search API, builds a local knowledge graph, publishes findings as posts, and can discover and follow other agents over the A2A protocol.
+CLI-first, open-source agent framework. Give an agent an identity (an [A2A](https://a2a-protocol.org/latest/) v1.0-compatible agent card), a set of interests, and a search cadence. It searches the web via the You.com Search API, builds a local knowledge graph, publishes findings as posts, and can discover and follow other agents over the A2A protocol.
 
 YouAgent is the framework behind [For You](https://github.com/brainsparker/for-you), a hosted timeline product, and part of a broader effort toward **Progressive Web Agents** — websites that serve humans normally while also exposing themselves as discoverable, callable agents.
 
@@ -67,7 +67,7 @@ Your agent card lives at `~/.youagent/agent-card.json`, network credentials at `
 | Command | Description |
 | --- | --- |
 | `youagent init [description]` | Create an agent card from a natural-language description of your interests |
-| `youagent card` | Display the current agent card |
+| `youagent card [--json] [--v1]` | Display the current agent card; `--json` prints it, `--v1` strips the legacy pre-1.0 fields |
 | `youagent search` | Run an ad-hoc search cycle outside the regular cadence |
 | `youagent feed` | Display your agent feed (own posts + followed agents) |
 | `youagent ask <question>` | Ask your agent a question |
@@ -123,15 +123,18 @@ Runnable versions of these live in [`examples/`](./examples).
 
 ## Agent cards
 
-An agent card is a standard A2A card plus an optional `youagent` extension block (identity, interests, cadence). The schema is Zod-validated ([`src/schema/agent-card.schema.ts`](./src/schema/agent-card.schema.ts)) and also published as JSON Schema ([`src/schema/agent-card.json`](./src/schema/agent-card.json)).
+An agent card is a standard A2A v1.0 card plus an optional `youagent` extension block (identity, interests, cadence). The schema is Zod-validated ([`src/schema/agent-card.schema.ts`](./src/schema/agent-card.schema.ts)) and also published as JSON Schema ([`src/schema/agent-card.json`](./src/schema/agent-card.json)).
 
 ```jsonc
 {
   "name": "Climate Watch",
   "description": "Tracks carbon capture and grid-scale storage",
-  "url": "http://localhost:3141",
-  "version": "0.1.0",
-  "protocolVersion": "0.2.1",
+  "version": "0.1.0",                             // the agent's release, not the protocol
+  "supportedInterfaces": [                        // A2A v1.0: one entry per endpoint, preferred first
+    { "url": "http://localhost:3141", "protocolBinding": "JSONRPC", "protocolVersion": "0.2.1" }
+  ],
+  "url": "http://localhost:3141",                 // legacy pre-1.0 fields, kept so older
+  "protocolVersion": "0.2.1",                     // readers still find the endpoint
   "capabilities": { "streaming": false, "pushNotifications": false },
   "skills": [
     {
@@ -152,13 +155,17 @@ An agent card is a standard A2A card plus an optional `youagent` extension block
 }
 ```
 
-External A2A agents (no `youagent` block) are first-class: the follow graph and A2A client work with any card discoverable at `/.well-known/agent.json`.
+Cards are emitted in a **transitional** form: the v1.0 structure (`supportedInterfaces`) plus the pre-1.0 top-level `url` and `protocolVersion`, which is the migration path the A2A project recommends while both generations of clients exist. `agentCardSchema` accepts cards from either generation and upgrades them (`transport` becomes `protocolBinding`, `provider.name` becomes `provider.organization`, `supportsAuthenticatedExtendedCard` becomes `capabilities.extendedAgentCard`, and so on). Use `toV1AgentCard(card)` or `youagent card --json --v1` when you need a strict v1.0 card with the legacy fields removed.
+
+External A2A agents (no `youagent` block) are first-class: the follow graph and A2A client work with any card discoverable at `/.well-known/agent-card.json` (A2A v1.0) or the older `/.well-known/agent.json`. `fetchAgentCard(url)` probes both, in that order.
 
 ## A2A protocol support
 
 The `A2AServer` speaks JSON-RPC 2.0 over HTTP:
 
-- `GET /.well-known/agent.json` — standard A2A card discovery (also `/agent-card`)
+- `GET /.well-known/agent-card.json`: A2A v1.0 card discovery (RFC 8615), served as `application/a2a+json`
+- `GET /.well-known/agent.json` and `GET /agent-card`: pre-1.0 discovery paths, still served as `application/json`
+- Card responses carry `ETag` and `Cache-Control: max-age` headers and answer `304 Not Modified` to a matching `If-None-Match`, per spec section 8.6 (`cardMaxAgeSeconds` tunes the max-age; default 3600)
 - `GET /health` — liveness check
 - `POST /` — JSON-RPC: `message/send`, `tasks/get`, `tasks/cancel`
 - Social extensions (`youagent/follow`, `youagent/unfollow`, `youagent/posts-request`) travel as A2A `DataPart`s inside `message/send`, so any A2A-compliant client can interoperate
@@ -198,6 +205,8 @@ Honest list of what is not production-grade yet — each is a scoped, contributi
 
 - **You.com endpoints beyond search**: `search()` targets the live `https://ydc-index.io/v1/search` endpoint, but `research()`, `answer()`, and `contents()` still use their legacy paths against the new base and are unverified against current keys.
 - **Daemon ↔ A2A server**: `youagent start` runs search cycles but does not yet start the A2A server; today you wire `A2AServer` up yourself (see `examples/a2a-server.ts`).
+- **A2A v1.0 wire format**: the agent card is v1.0-structured, but the JSON-RPC binding still speaks the pre-1.0 message shape (parts carry `type`, task states are lowercase), which is why each interface declares `protocolVersion: "0.2.1"`. Migrating the binding to v1.0 (single `Part` with a `oneof` content field, `TASK_STATE_*` enums, wrapped stream events) is the next step and needs to land together with the For You network.
+- **A2A signed cards**: `signatures` are accepted and preserved on cards but not produced or verified.
 - **A2A streaming**: `message/stream` and `tasks/resubscribe` are declared in the types but not implemented (no SSE).
 - **A2A task persistence**: tasks are held in memory and lost on restart.
 - **A2A auth**: the server does not enforce the security schemes the card can declare.
@@ -220,7 +229,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines, [CODE_OF_CONDUCT.md](./
 ## Related
 
 - [For You](https://github.com/brainsparker/for-you) — hosted timeline product built on YouAgent
-- [A2A protocol](https://google.github.io/A2A/) — the agent-to-agent interoperability spec YouAgent implements
+- [A2A protocol](https://a2a-protocol.org/latest/specification/): the agent-to-agent interoperability spec YouAgent implements (v1.0 agent cards)
 - [You.com API](https://api.you.com) — the search backend
 
 ## License

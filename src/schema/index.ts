@@ -1,5 +1,7 @@
 export {
   agentCardSchema,
+  agentCardObjectSchema,
+  a2aInterfaceSchema,
   interestSchema,
   sourceTypeSchema,
   createAgentCard,

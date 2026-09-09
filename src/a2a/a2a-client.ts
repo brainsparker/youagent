@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
 import { isYouAgent, getAgentIdentifier } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
+import { fetchAgentCard } from './discovery.js';
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -68,17 +69,17 @@ export class A2AClient {
     return response.result as Task;
   }
 
-  /** Discover a remote agent by fetching its agent card. */
+  /**
+   * Discover a remote agent by fetching its agent card.
+   *
+   * Probes the A2A v1.0 well-known path (`/.well-known/agent-card.json`)
+   * and falls back to the pre-1.0 path (`/.well-known/agent.json`). The
+   * returned card is normalized to the v1.0 structure.
+   *
+   * @throws AgentCardDiscoveryError when neither path serves a card.
+   */
   async discover(agentUrl: string): Promise<AgentCard> {
-    const url = agentUrl.replace(/\/+$/, '');
-    const res = await fetch(`${url}/.well-known/agent.json`);
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Discovery failed (HTTP ${res.status}): ${text}`);
-    }
-
-    return (await res.json()) as AgentCard;
+    return fetchAgentCard(agentUrl, { timeoutMs: DEFAULT_TIMEOUT_MS });
   }
 
   /** Ping a remote agent. */

@@ -3,8 +3,14 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
+import {
+  A2A_CARD_MEDIA_TYPE,
+  A2A_LEGACY_WELL_KNOWN_PATH,
+  A2A_WELL_KNOWN_PATH,
+} from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import type {
   JsonRpcRequest,
@@ -30,13 +36,25 @@ export type A2AMethodHandler = (params: unknown, request: JsonRpcRequest) => Pro
 
 /** Configuration for the A2A server. */
 export interface A2AServerConfig {
-  /** Port to listen on. Defaults to 3141. */
+  /** Port to listen on. Defaults to 3141. Use 0 for an ephemeral port. */
   port?: number;
-  /** The agent card to serve at GET /.well-known/agent.json. */
+  /**
+   * The agent card to serve at GET /.well-known/agent-card.json (A2A v1.0)
+   * and, for pre-1.0 clients, at /.well-known/agent.json and /agent-card.
+   */
   agentCard: AgentCard;
+  /**
+   * `max-age` for the card's Cache-Control header, in seconds (A2A spec
+   * section 8.6). Defaults to 3600. Set to 0 to ask clients to revalidate
+   * on every fetch (the ETag still lets them get a 304).
+   */
+  cardMaxAgeSeconds?: number;
 }
 
 const DEFAULT_PORT = 3141;
+const DEFAULT_CARD_MAX_AGE_SECONDS = 3600;
+/** Legacy convenience alias for the agent card, kept for existing callers. */
+const CARD_ALIAS_PATH = '/agent-card';
 
 // JSON-RPC 2.0 standard error codes
 const PARSE_ERROR = -32700;
@@ -50,10 +68,24 @@ export class A2AServer {
   private handlers = new Map<string, A2AMethodHandler>();
   private tasks = new Map<string, Task>();
   private readonly port: number;
+  private readonly cardMaxAgeSeconds: number;
 
   constructor(private config: A2AServerConfig) {
     this.port = config.port ?? DEFAULT_PORT;
+    this.cardMaxAgeSeconds = Math.max(0, Math.floor(config.cardMaxAgeSeconds ?? DEFAULT_CARD_MAX_AGE_SECONDS));
     this.server = createServer((req, res) => this.handleRequest(req, res));
+  }
+
+  /**
+   * The port the server is bound to, or null before `start()` resolves.
+   * Useful when the server was started with `port: 0`.
+   */
+  address(): { port: number } | null {
+    const addr = this.server.address();
+    if (addr && typeof addr === 'object') {
+      return { port: addr.port };
+    }
+    return null;
   }
 
   /** Register a handler for an A2A method (e.g., 'message/send'). */
@@ -201,27 +233,86 @@ export class A2AServer {
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const method = req.method?.toUpperCase() ?? '';
-    const url = req.url ?? '/';
+    const pathname = this.pathnameOf(req.url ?? '/');
 
     // GET /health
-    if (method === 'GET' && url === '/health') {
+    if (method === 'GET' && pathname === '/health') {
       this.sendJson(res, 200, { status: 'ok' });
       return;
     }
 
-    // GET /.well-known/agent.json (A2A standard discovery)
-    if (method === 'GET' && (url === '/.well-known/agent.json' || url === '/agent-card')) {
-      this.sendJson(res, 200, this.config.agentCard);
+    // Agent card discovery: A2A v1.0 well-known path, plus the pre-1.0 path
+    // and the /agent-card alias so older clients keep working.
+    if (
+      (method === 'GET' || method === 'HEAD') &&
+      (pathname === A2A_WELL_KNOWN_PATH ||
+        pathname === A2A_LEGACY_WELL_KNOWN_PATH ||
+        pathname === CARD_ALIAS_PATH)
+    ) {
+      this.sendAgentCard(req, res, pathname === A2A_WELL_KNOWN_PATH);
       return;
     }
 
-    // POST / — JSON-RPC 2.0 dispatcher
-    if (method === 'POST' && url === '/') {
+    // POST / : JSON-RPC 2.0 dispatcher
+    if (method === 'POST' && pathname === '/') {
       await this.handleJsonRpc(req, res);
       return;
     }
 
     this.sendJson(res, 404, { error: 'not found' });
+  }
+
+  /** Path component of a request URL, ignoring any query string. */
+  private pathnameOf(rawUrl: string): string {
+    try {
+      return new URL(rawUrl, 'http://localhost').pathname;
+    } catch {
+      return rawUrl;
+    }
+  }
+
+  /**
+   * Serve the agent card with the caching headers the A2A spec asks for
+   * (section 8.6): an ETag derived from the card content, a Cache-Control
+   * max-age, and 304 Not Modified for matching If-None-Match requests.
+   *
+   * The v1.0 well-known path answers with `application/a2a+json`; the legacy
+   * paths keep `application/json` for clients that predate the media type.
+   */
+  private sendAgentCard(req: IncomingMessage, res: ServerResponse, v1Path: boolean): void {
+    const body = JSON.stringify(this.config.agentCard);
+    const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 32)}"`;
+    const headers: Record<string, string> = {
+      'Content-Type': v1Path ? A2A_CARD_MEDIA_TYPE : 'application/json',
+      'Cache-Control': `public, max-age=${this.cardMaxAgeSeconds}`,
+      ETag: etag,
+    };
+
+    if (this.etagMatches(req.headers['if-none-match'], etag)) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+
+    headers['Content-Length'] = String(Buffer.byteLength(body));
+    res.writeHead(200, headers);
+    if (req.method?.toUpperCase() === 'HEAD') {
+      res.end();
+    } else {
+      res.end(body);
+    }
+  }
+
+  /** RFC 9110 If-None-Match evaluation: weak comparison, `*` matches any. */
+  private etagMatches(header: string | string[] | undefined, etag: string): boolean {
+    if (!header) return false;
+    const raw = Array.isArray(header) ? header.join(',') : header;
+    const strip = (tag: string) => tag.trim().replace(/^W\//, '');
+    const target = strip(etag);
+    return raw.split(',').some((candidate) => {
+      const c = candidate.trim();
+      return c === '*' || strip(c) === target;
+    });
   }
 
   private async handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {

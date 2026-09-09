@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+A2A v1.0 Agent Card compatibility. The A2A specification reached 1.0 in
+March 2026 and restructured the Agent Card; a v0.x card parses fine but
+gives a v1.0 client no addressable interface. YouAgent cards now carry the
+v1.0 structure while keeping the legacy fields for older readers.
+
+- Agent cards declare `supportedInterfaces` (url, `protocolBinding`,
+  `protocolVersion`) alongside the legacy top-level `url` and
+  `protocolVersion`; `createAgentCard` and `createExternalAgentCard` emit
+  this transitional form, and `toV1AgentCard` strips the legacy fields
+- `agentCardSchema` upgrades pre-1.0 cards before validating: `transport`
+  to `protocolBinding`, `preferredTransport`/`additionalInterfaces` into the
+  ordered `supportedInterfaces`, `provider.name` to `provider.organization`,
+  `supportsAuthenticatedExtendedCard` to `capabilities.extendedAgentCard`,
+  `security` to `securityRequirements`; the removed
+  `capabilities.stateTransitionHistory` is accepted but no longer defaulted;
+  `signatures` and per-skill `securityRequirements` are accepted
+- `A2AServer` serves the card at `/.well-known/agent-card.json` as
+  `application/a2a+json` (and still at `/.well-known/agent.json` and
+  `/agent-card`), with `ETag`, `Cache-Control: max-age` (new
+  `cardMaxAgeSeconds` option), `304 Not Modified` on `If-None-Match`, `HEAD`
+  support, and query strings ignored; new `address()` reports the bound port
+- New `fetchAgentCard(url)` probes the v1.0 path then the legacy path with an
+  `application/a2a+json` Accept header and normalizes the result;
+  `A2AClient.discover` and `RegistryClient.registerExternal` use it, and
+  registry reads upgrade legacy cards to the v1.0 structure
+- `youagent card` lists A2A interfaces and gains `--json` and `--v1`
+- New exports: `getAgentUrl`, `getPrimaryInterface`, `normalizeAgentCard`,
+  `toProtocolBinding`, `toV1AgentCard`, `A2A_*` constants,
+  `AgentCardDiscoveryError`
+- Breaking for hand-built cards: `AgentCard.supportedInterfaces` is now a
+  required field in the TypeScript type (`url` and `protocolVersion` are
+  optional legacy fields); cards built with `createAgentCard` need no change
+
 ## 0.2.0 (unreleased)
 
 Client-side Loop B: youagent agents are now full participants on the For You

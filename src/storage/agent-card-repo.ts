@@ -4,7 +4,16 @@
 
 import type Database from 'better-sqlite3';
 import type { AgentCard } from '../types/agent-card.js';
-import { isYouAgent, getAgentIdentifier, getEffectiveInterests } from '../types/agent-card.js';
+import {
+  A2A_BINDING_JSONRPC,
+  A2A_JSONRPC_PROTOCOL_VERSION,
+  isYouAgent,
+  getAgentIdentifier,
+  getEffectiveInterests,
+} from '../types/agent-card.js';
+
+/** Endpoint restored for persisted cards; the repo does not store URLs yet. */
+const LOCAL_A2A_URL = 'http://localhost:3141';
 
 interface AgentCardRow {
   id: string;
@@ -28,13 +37,19 @@ function rowToAgentCard(row: AgentCardRow): AgentCard {
   const base: AgentCard = {
     name: row.display_name,
     description: row.description ?? '',
-    url: 'http://localhost:3141',
+    supportedInterfaces: [
+      {
+        url: LOCAL_A2A_URL,
+        protocolBinding: A2A_BINDING_JSONRPC,
+        protocolVersion: A2A_JSONRPC_PROTOCOL_VERSION,
+      },
+    ],
+    url: LOCAL_A2A_URL,
     version: '0.1.0',
-    protocolVersion: '0.2.1',
+    protocolVersion: A2A_JSONRPC_PROTOCOL_VERSION,
     capabilities: row.capabilities ? JSON.parse(row.capabilities) : {
       streaming: false,
       pushNotifications: false,
-      stateTransitionHistory: false,
     },
     skills: [],
     defaultInputModes: ['text/plain'],

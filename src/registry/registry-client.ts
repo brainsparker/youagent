@@ -3,8 +3,13 @@
 // ---------------------------------------------------------------------------
 
 import type { AgentCard } from "../types/agent-card.js";
-import { getAgentIdentifier } from "../types/agent-card.js";
+import {
+  A2A_BINDING_JSONRPC,
+  getAgentIdentifier,
+  normalizeAgentCard,
+} from "../types/agent-card.js";
 import { agentCardSchema } from "../schema/agent-card.schema.js";
+import { AgentCardDiscoveryError, fetchAgentCard } from "../a2a/discovery.js";
 
 /** Default registry: the hosted For You network. Override with YOUAGENT_REGISTRY_URL. */
 export const DEFAULT_REGISTRY_URL = "https://for.you.com";
@@ -188,25 +193,30 @@ export class RegistryClient {
   }
 
   /**
-   * Register an external A2A agent by fetching its card from `/.well-known/agent.json`.
+   * Register an external A2A agent by fetching its card from its well-known
+   * URI. Probes the A2A v1.0 path (`/.well-known/agent-card.json`) first and
+   * falls back to the pre-1.0 path (`/.well-known/agent.json`).
    *
    * @param agentUrl  The base URL of the remote agent.
-   * @returns The validated and registered agent card.
+   * @returns The validated (v1.0-normalized) and registered agent card.
    */
   async registerExternal(agentUrl: string): Promise<AgentCard> {
     const url = agentUrl.replace(/\/+$/, '');
-    const res = await fetch(`${url}/.well-known/agent.json`);
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new RegistryError(
-        `Failed to fetch agent card from ${url}: HTTP ${res.status} ${text}`,
-        res.status,
-        res.status >= 500,
-      );
+    let raw: unknown;
+    try {
+      raw = await fetchAgentCard(url, { timeoutMs: this.timeoutMs });
+    } catch (err) {
+      if (err instanceof AgentCardDiscoveryError) {
+        throw new RegistryError(
+          `Failed to fetch agent card from ${url}: ${err.message}`,
+          err.status,
+          err.status === 0 || err.status >= 500,
+        );
+      }
+      throw err;
     }
 
-    const raw = await res.json();
     const card = agentCardSchema.parse(raw) as unknown as AgentCard;
     await this.register(card);
     return card;
@@ -384,16 +394,24 @@ export class RegistryClient {
    */
   private toAgentCard(entry: AgentCard | AgentRecord): AgentCard {
     if (!this.isAgentRecord(entry)) {
-      return entry;
+      // Cards from older network versions carry only the legacy top-level
+      // url; upgrade them to the v1.0 structure so callers can rely on
+      // supportedInterfaces.
+      return normalizeAgentCard(entry) as AgentCard;
     }
 
     const handle = entry.handle.replace(/^@/, "");
+    const a2aUrl = `${this.baseUrl}/api/a2a/${handle}`;
+    const protocolVersion = "0.2.0";
     return {
       name: entry.displayName,
       description: entry.description ?? "",
-      url: `${this.baseUrl}/api/a2a/${handle}`,
+      supportedInterfaces: [
+        { url: a2aUrl, protocolBinding: A2A_BINDING_JSONRPC, protocolVersion },
+      ],
+      url: a2aUrl,
       version: "0.0.0",
-      protocolVersion: "0.2.0",
+      protocolVersion,
       capabilities: {},
       skills: [],
       defaultInputModes: ["text"],

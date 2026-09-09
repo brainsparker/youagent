@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  A2A_BINDING_JSONRPC,
+  A2A_JSONRPC_PROTOCOL_VERSION,
+  normalizeAgentCard,
+  type A2ASecurityScheme,
+} from '../types/agent-card.js';
 
 // ---------------------------------------------------------------------------
 // Reusable patterns
@@ -14,7 +20,7 @@ const CADENCE_REGEX =
   /^(\d+[mhd]|(\*|[0-9,/-]+)\s+(\*|[0-9,/-]+)\s+(\*|[0-9,/-]+)\s+(\*|[0-9,/-]+)\s+(\*|[0-9,/-]+))$/;
 
 // ---------------------------------------------------------------------------
-// A2A Protocol sub-schemas
+// A2A Protocol sub-schemas (v1.0 data model)
 // ---------------------------------------------------------------------------
 
 const a2aProviderSchema = z.object({
@@ -26,13 +32,20 @@ const a2aExtensionSchema = z.object({
   uri: z.string(),
   description: z.string().optional(),
   required: z.boolean().optional(),
+  params: z.record(z.unknown()).optional(),
 });
 
 const a2aCapabilitiesSchema = z.object({
   streaming: z.boolean().optional().default(false),
   pushNotifications: z.boolean().optional().default(false),
-  stateTransitionHistory: z.boolean().optional().default(false),
+  extendedAgentCard: z.boolean().optional(),
   extensions: z.array(a2aExtensionSchema).optional(),
+  /** Removed in A2A v1.0; accepted for legacy cards, never defaulted. */
+  stateTransitionHistory: z.boolean().optional(),
+});
+
+const a2aSecurityRequirementSchema = z.object({
+  schemes: z.record(z.object({ list: z.array(z.string()) })),
 });
 
 const a2aSkillSchema = z.object({
@@ -43,20 +56,36 @@ const a2aSkillSchema = z.object({
   examples: z.array(z.string()).optional(),
   inputModes: z.array(z.string()).optional(),
   outputModes: z.array(z.string()).optional(),
+  securityRequirements: z.array(a2aSecurityRequirementSchema).optional(),
 });
 
-const a2aInterfaceSchema = z.object({
-  transport: z.string(),
-  url: z.string().url(),
+/**
+ * A2A v1.0 AgentInterface. `url` is a plain string because gRPC interfaces
+ * use `host:port` rather than an absolute URL.
+ */
+export const a2aInterfaceSchema = z.object({
+  url: z.string().min(1, 'interface url must not be empty'),
+  protocolBinding: z.string().min(1, 'protocolBinding is required (JSONRPC, GRPC, HTTP+JSON, or a URI)'),
+  protocolVersion: z.string().min(1, 'protocolVersion is required on every interface'),
+  tenant: z.string().optional(),
 });
 
-const a2aSecuritySchemeSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('apiKey'), name: z.string(), in: z.enum(['cookie', 'header', 'query']), description: z.string().optional() }),
-  z.object({ type: z.literal('http'), scheme: z.string(), bearerFormat: z.string().optional(), description: z.string().optional() }),
-  z.object({ type: z.literal('oauth2'), flows: z.record(z.unknown()), description: z.string().optional() }),
-  z.object({ type: z.literal('openIdConnect'), openIdConnectUrl: z.string().url(), description: z.string().optional() }),
-  z.object({ type: z.literal('mutualTLS'), description: z.string().optional() }),
-]);
+/**
+ * A2A v1.0 SecurityScheme is a oneof keyed by scheme kind
+ * (`apiKeySecurityScheme`, `httpAuthSecurityScheme`, ...). Validated
+ * structurally only, so cards from other implementations are not rejected
+ * for scheme details this package does not enforce.
+ */
+const a2aSecuritySchemeSchema = z.custom<A2ASecurityScheme>(
+  (value) => value !== null && typeof value === 'object' && !Array.isArray(value),
+  'security scheme must be an object',
+);
+
+const a2aSignatureSchema = z.object({
+  protected: z.string(),
+  signature: z.string(),
+  header: z.record(z.unknown()).optional(),
+});
 
 // ---------------------------------------------------------------------------
 // YouAgent extension sub-schemas
@@ -137,57 +166,85 @@ const youagentExtensionsSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Full Agent Card schema (A2A + YouAgent extensions)
+// Full Agent Card schema (A2A v1.0 + YouAgent extensions)
 // ---------------------------------------------------------------------------
 
-export const agentCardSchema = z.object({
-  // ── A2A base fields ─────────────────────────────────────────────────────
+/**
+ * The v1.0-shaped object schema. Prefer `agentCardSchema`, which runs the
+ * legacy-field upgrade first so pre-1.0 cards (top-level `url` and
+ * `protocolVersion`, `transport`, `provider.name`, ...) still validate.
+ */
+export const agentCardObjectSchema = z.object({
+  // ── A2A base fields (v1.0) ─────────────────────────────────────────────
   name: z.string().min(1),
   description: z.string().min(1),
-  url: z.string().url(),
+  supportedInterfaces: z
+    .array(a2aInterfaceSchema)
+    .min(1, 'at least one supported interface (or a legacy top-level url) is required'),
   version: z.string().default('0.1.0'),
-  protocolVersion: z.string().default('0.2.1'),
   provider: a2aProviderSchema.optional(),
   capabilities: a2aCapabilitiesSchema.default({
     streaming: false,
     pushNotifications: false,
-    stateTransitionHistory: false,
   }),
   skills: z.array(a2aSkillSchema).default([]),
   defaultInputModes: z.array(z.string()).default(['text/plain']),
   defaultOutputModes: z.array(z.string()).default(['text/plain']),
-  supportedInterfaces: z.array(a2aInterfaceSchema).optional(),
   securitySchemes: z.record(a2aSecuritySchemeSchema).optional(),
-  security: z.array(z.record(z.array(z.string()))).optional(),
+  securityRequirements: z.array(a2aSecurityRequirementSchema).optional(),
+  signatures: z.array(a2aSignatureSchema).optional(),
   documentationUrl: z.string().url().optional(),
   iconUrl: z.string().url().optional(),
+
+  // ── Transitional legacy fields (pre-1.0 readers) ───────────────────────
+  url: z.string().url().optional(),
+  protocolVersion: z.string().optional(),
 
   // ── YouAgent extensions (optional for external A2A agents) ──────────────
   youagent: youagentExtensionsSchema.optional(),
 });
 
+/**
+ * Agent Card schema. Accepts cards from any A2A revision: legacy fields are
+ * upgraded to the v1.0 structure (see `normalizeAgentCard`) before
+ * validation, and the output always carries `supportedInterfaces`.
+ */
+export const agentCardSchema = z.preprocess(normalizeAgentCard, agentCardObjectSchema);
+
 // ---------------------------------------------------------------------------
 // Inferred types
 // ---------------------------------------------------------------------------
 
-export type AgentCardInput = z.input<typeof agentCardSchema>;
-export type AgentCardOutput = z.output<typeof agentCardSchema>;
+/** v1.0-shaped input. Legacy shapes are also accepted at runtime. */
+export type AgentCardInput = z.input<typeof agentCardObjectSchema>;
+export type AgentCardOutput = z.output<typeof agentCardObjectSchema>;
 
 // ---------------------------------------------------------------------------
-// Factory helper
+// Factory helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Create a validated AgentCard from minimal input.
- *
- * Requires at minimum: handle, interests, cadence, and a URL.
- * Generates A2A skills from YouAgent capabilities, applies defaults for
- * all optional fields. Throws a `ZodError` if validation fails.
+ * Build the transitional endpoint declaration for a JSON-RPC agent:
+ * a v1.0 `supportedInterfaces` entry plus the legacy top-level fields.
  */
+function jsonRpcEndpoint(url: string) {
+  return {
+    supportedInterfaces: [
+      {
+        url,
+        protocolBinding: A2A_BINDING_JSONRPC,
+        protocolVersion: A2A_JSONRPC_PROTOCOL_VERSION,
+      },
+    ],
+    url,
+    protocolVersion: A2A_JSONRPC_PROTOCOL_VERSION,
+  };
+}
+
 /**
  * Create a validated AgentCard for an external A2A agent (no YouAgent extensions).
  *
- * Requires at minimum: name, url, and at least one skill.
+ * Requires at minimum: name and a url (or explicit `supportedInterfaces`).
  * Throws a `ZodError` if validation fails.
  */
 export function createExternalAgentCard(
@@ -197,12 +254,14 @@ export function createExternalAgentCard(
     url: string;
     skills?: Array<{ id: string; name: string; description: string; tags: string[] }>;
     version?: string;
+    supportedInterfaces?: Array<{ url: string; protocolBinding: string; protocolVersion: string; tenant?: string }>;
   },
 ): AgentCardOutput {
   return agentCardSchema.parse({
     name: input.name,
     description: input.description ?? `External A2A agent: ${input.name}`,
-    url: input.url,
+    ...jsonRpcEndpoint(input.url),
+    ...(input.supportedInterfaces ? { supportedInterfaces: input.supportedInterfaces } : {}),
     version: input.version ?? '0.1.0',
     skills: input.skills ?? [],
     capabilities: {
@@ -212,6 +271,15 @@ export function createExternalAgentCard(
   });
 }
 
+/**
+ * Create a validated AgentCard from minimal input.
+ *
+ * Requires at minimum: handle, interests, and cadence. Generates A2A skills
+ * from YouAgent capabilities, declares the JSON-RPC interface in the v1.0
+ * `supportedInterfaces` form (plus legacy `url`/`protocolVersion` for
+ * pre-1.0 readers), and applies defaults for all optional fields.
+ * Throws a `ZodError` if validation fails.
+ */
 export function createAgentCard(
   input: {
     handle: string;
@@ -246,7 +314,7 @@ export function createAgentCard(
     // A2A base
     name,
     description,
-    url: input.url ?? 'http://localhost:3141',
+    ...jsonRpcEndpoint(input.url ?? 'http://localhost:3141'),
     skills,
     capabilities: {
       streaming: false,

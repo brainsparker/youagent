@@ -7,6 +7,9 @@ const BASE_URL = 'https://network.test';
 const CARD: AgentCard = {
   name: 'Climate Watch',
   description: 'Tracks carbon capture',
+  supportedInterfaces: [
+    { url: 'http://localhost:3141', protocolBinding: 'JSONRPC', protocolVersion: '0.2.1' },
+  ],
   url: 'http://localhost:3141',
   version: '0.1.0',
   protocolVersion: '0.2.1',
@@ -228,6 +231,9 @@ describe('RegistryClient record normalization', () => {
       { topic: 'grid-scale batteries' },
     ]);
     expect(card.url).toBe(`${BASE_URL}/api/a2a/climate-watch`);
+    expect(card.supportedInterfaces).toEqual([
+      { url: `${BASE_URL}/api/a2a/climate-watch`, protocolBinding: 'JSONRPC', protocolVersion: '0.2.0' },
+    ]);
   });
 
   it('passes through responses that are already agent cards', async () => {
@@ -237,6 +243,17 @@ describe('RegistryClient record normalization', () => {
     const card = await client.getAgent('8a9c1f2e-0000-4000-8000-000000000000');
 
     expect(card).toEqual(CARD);
+  });
+
+  it('upgrades pre-1.0 cards returned by the network to the v1.0 structure', async () => {
+    const { supportedInterfaces: _ifaces, ...legacy } = CARD;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(legacy)));
+
+    const client = new RegistryClient({ baseUrl: BASE_URL });
+    const card = await client.getAgent('8a9c1f2e-0000-4000-8000-000000000000');
+
+    expect(card?.supportedInterfaces).toEqual(CARD.supportedInterfaces);
+    expect(card?.url).toBe(CARD.url);
   });
 
   it('normalizes a single record from getAgentByHandle', async () => {
@@ -257,5 +274,65 @@ describe('RegistryClient record normalization', () => {
 
     const client = new RegistryClient({ baseUrl: BASE_URL });
     await expect(client.getAgent('missing')).resolves.toBeNull();
+  });
+});
+
+describe('RegistryClient.registerExternal', () => {
+  const EXTERNAL_LEGACY = {
+    name: 'Legacy External',
+    description: 'A pre-1.0 agent',
+    url: 'https://external.test/a2a',
+    version: '1.0.0',
+    protocolVersion: '0.2.1',
+    capabilities: {},
+    skills: [{ id: 'x', name: 'X', description: 'does x', tags: ['x'] }],
+    defaultInputModes: ['text/plain'],
+    defaultOutputModes: ['text/plain'],
+  };
+
+  it('probes the v1.0 well-known path, falls back to the legacy path, and registers the upgraded card', async () => {
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url) => {
+      if (url === 'https://external.test/.well-known/agent-card.json') {
+        return new Response('not found', { status: 404 });
+      }
+      if (url === 'https://external.test/.well-known/agent.json') {
+        return jsonResponse(EXTERNAL_LEGACY);
+      }
+      // Registration POST
+      return jsonResponse({ ...RECORD, apiKey: 'ya_ext' }, 201);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new RegistryClient({ baseUrl: BASE_URL });
+    const card = await client.registerExternal('https://external.test/');
+
+    expect(card.supportedInterfaces).toEqual([
+      { url: 'https://external.test/a2a', protocolBinding: 'JSONRPC', protocolVersion: '0.2.1' },
+    ]);
+    const urls = fetchMock.mock.calls.map((c) => c[0]);
+    expect(urls).toEqual([
+      'https://external.test/.well-known/agent-card.json',
+      'https://external.test/.well-known/agent.json',
+      `${BASE_URL}/api/v1/agents`,
+    ]);
+    const registered = JSON.parse(fetchMock.mock.calls[2][1]?.body as string);
+    expect(registered.supportedInterfaces).toHaveLength(1);
+  });
+
+  it('wraps discovery failures in RegistryError with the last status', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 404 })));
+
+    const client = new RegistryClient({ baseUrl: BASE_URL });
+    let caught: unknown;
+    try {
+      await client.registerExternal('https://external.test');
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(RegistryError);
+    const err = caught as RegistryError;
+    expect(err.statusCode).toBe(404);
+    expect(err.retryable).toBe(false);
   });
 });

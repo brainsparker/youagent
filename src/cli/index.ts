@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { createRequire } from 'node:module';
 import {
   initCommand,
   cardCommand,
@@ -21,10 +22,17 @@ import {
   keyCommand,
 } from './commands/index.js';
 
+// Resolve the version from package.json at runtime so the CLI can never
+// drift from the published version. The relative depth is identical in
+// dev (src/cli/) and in the build output (dist/cli/).
+const { version } = createRequire(import.meta.url)('../../package.json') as {
+  version: string;
+};
+
 const program = new Command()
   .name('youagent')
   .description('CLI-first agent framework powered by You.com')
-  .version('0.1.0');
+  .version(version);
 
 // ── Implemented commands ─────────────────────────────────────────────────────
 

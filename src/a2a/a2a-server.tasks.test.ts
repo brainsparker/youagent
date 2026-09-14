@@ -474,4 +474,29 @@ describe('A2A helpers', () => {
       expect(isPrivateHost(host)).toBe(false);
     }
   });
+
+  it('classifies IPv4-mapped IPv6 loopback as private', () => {
+    // new URL() canonicalizes [::ffff:127.0.0.1] to ::ffff:7f00:1, which
+    // still reaches loopback, so the mapped form has to be unpacked.
+    for (const raw of ['http://[::ffff:127.0.0.1]/hook', 'http://[::ffff:10.0.0.5]/hook', 'http://[::ffff:192.168.1.1]/hook']) {
+      expect(isPrivateHost(new URL(raw).hostname)).toBe(true);
+    }
+    expect(isPrivateHost(new URL('http://[::ffff:8.8.8.8]/hook').hostname)).toBe(false);
+  });
+
+  it('rejects a webhook that hides loopback behind an IPv4-mapped IPv6 literal', async () => {
+    const server = new A2AServer({ agentCard: makeCard(true), port: 0 });
+    server.registerYouAgentHandlers({});
+    const url = await startServer(server);
+    try {
+      const task = await sendText(url, 'a');
+      const res = await rpc(url, 'tasks/pushNotificationConfig/set', {
+        taskId: task.id,
+        pushNotificationConfig: { url: 'http://[::ffff:127.0.0.1]:9/hook' },
+      });
+      expect(res.error?.message).toMatch(/loopback or private-network/);
+    } finally {
+      await server.stop();
+    }
+  });
 });

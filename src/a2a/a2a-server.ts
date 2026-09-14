@@ -962,13 +962,8 @@ function decodePageToken(token: string): number | undefined {
   return Number.isInteger(seq) && seq > 0 ? seq : undefined;
 }
 
-/** Loopback, link-local and RFC 1918 / RFC 4193 hosts. */
-export function isPrivateHost(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0') return true;
-  if (host === '::1' || host === '::' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80')) {
-    return true;
-  }
+/** True for a dotted-quad IPv4 string in a loopback / private / link-local range. */
+function isPrivateIpv4(host: string): boolean {
   const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!v4) return false;
   const [a, b] = [Number(v4[1]), Number(v4[2])];
@@ -980,4 +975,33 @@ export function isPrivateHost(hostname: string): boolean {
     (a === 192 && b === 168) ||
     (a === 169 && b === 254)
   );
+}
+
+/**
+ * Pull the embedded IPv4 out of an IPv4-mapped or IPv4-compatible IPv6
+ * address. `new URL()` canonicalizes `[::ffff:127.0.0.1]` to `::ffff:7f00:1`,
+ * so the dotted form alone is not enough to catch a loopback target.
+ */
+function mappedIpv4(host: string): string | undefined {
+  const m = host.match(/^::(?:ffff:)?(?:0{1,4}:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (m) {
+    const hi = parseInt(m[1], 16);
+    const lo = parseInt(m[2], 16);
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  const dotted = host.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  return dotted ? dotted[1] : undefined;
+}
+
+/** Loopback, link-local and RFC 1918 / RFC 4193 hosts. */
+export function isPrivateHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0') return true;
+  if (host === '::1' || host === '::' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80')) {
+    return true;
+  }
+  // IPv4-mapped IPv6 (::ffff:7f00:1) reaches the same host as 127.0.0.1.
+  const mapped = mappedIpv4(host);
+  if (mapped) return isPrivateIpv4(mapped);
+  return isPrivateIpv4(host);
 }

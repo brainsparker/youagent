@@ -1,11 +1,23 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { writeFile } from 'node:fs/promises';
 import { loadAgentCard } from '../utils.js';
 import { AgentDatabase } from '../../storage/database.js';
 import { PostRepo } from '../../storage/post-repo.js';
 import { FollowRepo } from '../../storage/follow-repo.js';
 import type { Post } from '../../types/post.js';
 import { getAgentIdentifier } from '../../types/agent-card.js';
+import { renderAtomFeed, renderJsonFeed, type FeedOptions } from '../../feed/feed.js';
+
+/** Output formats accepted by `youagent feed --format`. */
+export type FeedCliFormat = 'compact' | 'detailed' | 'json' | 'atom' | 'jsonfeed';
+
+const FEED_CLI_FORMATS: FeedCliFormat[] = ['compact', 'detailed', 'json', 'atom', 'jsonfeed'];
+
+/** Formats that produce a syndication document rather than terminal output. */
+export function isSyndicationFormat(format: string): format is 'atom' | 'jsonfeed' {
+  return format === 'atom' || format === 'jsonfeed';
+}
 
 /**
  * Format a timestamp for display.
@@ -67,10 +79,13 @@ export function feedCommand(program: Command): void {
     .option('-l, --limit <n>', 'Number of posts to display', '20')
     .option(
       '-f, --format <type>',
-      'Output format: compact, detailed, or json',
+      'Output format: compact, detailed, json, atom (Atom 1.0), or jsonfeed (JSON Feed 1.1)',
       'detailed',
     )
-    .action(async (opts: { limit: string; format: string }) => {
+    .option('--mine', 'Only include posts by this agent (default for atom and jsonfeed)')
+    .option('--no-mine', 'Include followed agents too (default for compact, detailed, and json)')
+    .option('-o, --output <path>', 'Write the output to a file instead of stdout')
+    .action(async (opts: { limit: string; format: string; mine?: boolean; output?: string }) => {
       const card = await loadAgentCard();
 
       if (!card) {
@@ -83,7 +98,20 @@ export function feedCommand(program: Command): void {
       }
 
       const limit = parseInt(opts.limit, 10) || 20;
-      const format = opts.format as 'compact' | 'detailed' | 'json';
+      const format = opts.format as FeedCliFormat;
+
+      if (!FEED_CLI_FORMATS.includes(format)) {
+        console.error(
+          chalk.red(`Unknown format "${opts.format}". `) +
+            chalk.dim(`Expected one of: ${FEED_CLI_FORMATS.join(', ')}.`),
+        );
+        process.exit(1);
+      }
+
+      // Syndication formats publish this agent's own posts unless told otherwise;
+      // a public feed should not re-broadcast other agents' posts by default.
+      const syndicate = isSyndicationFormat(format);
+      const onlyMine = opts.mine ?? syndicate;
 
       const db = new AgentDatabase();
       db.initialize();
@@ -92,13 +120,37 @@ export function feedCommand(program: Command): void {
         const postRepo = new PostRepo(db.getDb());
         const followRepo = new FollowRepo(db.getDb());
 
-        // Collect agent IDs: own + followed
-        const selfId = getAgentIdentifier(card).id;
-        const followedIds = followRepo.getFollowing(selfId);
+        // Collect agent IDs: own + followed (or own only)
+        const ident = getAgentIdentifier(card);
+        const selfId = ident.id;
+        const followedIds = onlyMine ? [] : followRepo.getFollowing(selfId);
         const allAgentIds = [selfId, ...followedIds];
 
         // Fetch posts sorted by timestamp descending
         const posts: Post[] = postRepo.findByAgentIds(allAgentIds, limit, 0);
+
+        if (syndicate) {
+          const feedOptions: FeedOptions = {
+            description: card.description,
+            siteUrl: card.url,
+            agentHandle: ident.handle,
+            agentId: selfId,
+          };
+          const document =
+            format === 'atom'
+              ? renderAtomFeed(posts, feedOptions)
+              : renderJsonFeed(posts, feedOptions);
+
+          if (opts.output) {
+            await writeFile(opts.output, document, 'utf-8');
+            console.error(
+              chalk.green(`Wrote ${format === 'atom' ? 'Atom' : 'JSON Feed'} with ${posts.length} post${posts.length === 1 ? '' : 's'} to ${opts.output}`),
+            );
+          } else {
+            process.stdout.write(document);
+          }
+          return;
+        }
 
         if (posts.length === 0) {
           console.log('');
@@ -115,7 +167,13 @@ export function feedCommand(program: Command): void {
         }
 
         if (format === 'json') {
-          console.log(JSON.stringify(posts, null, 2));
+          const document = JSON.stringify(posts, null, 2) + '\n';
+          if (opts.output) {
+            await writeFile(opts.output, document, 'utf-8');
+            console.error(chalk.green(`Wrote ${posts.length} post${posts.length === 1 ? '' : 's'} to ${opts.output}`));
+          } else {
+            process.stdout.write(document);
+          }
           return;
         }
 

@@ -7,4 +7,5 @@ export * from './registry/index.js';
 export * from './daemon/index.js';
 export * from './knowledge/index.js';
 export * from './a2a/index.js';
+export * from './feed/index.js';
 export * from './notifications/index.js';

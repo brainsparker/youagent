@@ -5,7 +5,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
+import { getAgentIdentifier } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
+import {
+  ATOM_CONTENT_TYPE,
+  DEFAULT_FEED_LIMIT,
+  JSON_FEED_CONTENT_TYPE,
+  parseFeedLimit,
+  renderAtomFeed,
+  renderJsonFeed,
+  type FeedOptions,
+} from '../feed/feed.js';
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -28,15 +38,48 @@ import type {
 /** Handler function for an A2A JSON-RPC method. */
 export type A2AMethodHandler = (params: unknown, request: JsonRpcRequest) => Promise<unknown>;
 
+/**
+ * Syndication feed configuration. When present, the server also answers
+ * GET /feed.xml (Atom 1.0) and GET /feed.json (JSON Feed 1.1) with the
+ * agent's posts, so feed readers and other web clients can follow the agent
+ * without speaking A2A.
+ */
+export interface A2AFeedConfig {
+  /**
+   * Return the posts to syndicate, newest first. `limit` is the bounded
+   * value of the request's `?limit=` query (default 50, max 500).
+   */
+  getPosts: (limit: number) => Promise<Post[]> | Post[];
+  /** Feed title. Defaults to `@handle`. */
+  title?: string;
+  /** Feed description. Defaults to the agent card description. */
+  description?: string;
+  /** Default number of posts when no `?limit=` is given. Defaults to 50. */
+  defaultLimit?: number;
+  /**
+   * Public base URL used for the feed's self link (for example when the
+   * server sits behind a reverse proxy). Defaults to the agent card `url`.
+   */
+  publicUrl?: string;
+}
+
 /** Configuration for the A2A server. */
 export interface A2AServerConfig {
-  /** Port to listen on. Defaults to 3141. */
+  /** Port to listen on. Defaults to 3141. Pass 0 to pick a free port. */
   port?: number;
   /** The agent card to serve at GET /.well-known/agent.json. */
   agentCard: AgentCard;
+  /** Optional Atom and JSON Feed endpoints for the agent's posts. */
+  feed?: A2AFeedConfig;
 }
 
 const DEFAULT_PORT = 3141;
+
+/** Path of the Atom feed route. */
+export const ATOM_FEED_PATH = '/feed.xml';
+
+/** Path of the JSON Feed route. */
+export const JSON_FEED_PATH = '/feed.json';
 
 // JSON-RPC 2.0 standard error codes
 const PARSE_ERROR = -32700;
@@ -154,6 +197,16 @@ export class A2AServer {
     });
   }
 
+  /**
+   * The port the server is bound to. Equals the configured port until
+   * `start()` resolves; useful when the server was started on port 0.
+   */
+  get listeningPort(): number {
+    const address = this.server.address();
+    if (address && typeof address === 'object') return address.port;
+    return this.port;
+  }
+
   /** Stop the server gracefully. */
   async stop(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -215,6 +268,15 @@ export class A2AServer {
       return;
     }
 
+    // GET /feed.xml and /feed.json (syndication, only when a feed is configured)
+    if (method === 'GET' && this.config.feed) {
+      const parsed = new URL(url, 'http://localhost');
+      if (parsed.pathname === ATOM_FEED_PATH || parsed.pathname === JSON_FEED_PATH) {
+        await this.handleFeed(res, parsed);
+        return;
+      }
+    }
+
     // POST / — JSON-RPC 2.0 dispatcher
     if (method === 'POST' && url === '/') {
       await this.handleJsonRpc(req, res);
@@ -222,6 +284,53 @@ export class A2AServer {
     }
 
     this.sendJson(res, 404, { error: 'not found' });
+  }
+
+  private async handleFeed(res: ServerResponse, parsed: URL): Promise<void> {
+    const feed = this.config.feed;
+    if (!feed) {
+      this.sendJson(res, 404, { error: 'not found' });
+      return;
+    }
+
+    const limit = parseFeedLimit(
+      parsed.searchParams.get('limit'),
+      feed.defaultLimit ?? DEFAULT_FEED_LIMIT,
+    );
+
+    let posts: Post[];
+    try {
+      posts = await feed.getPosts(limit);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'failed to load posts';
+      this.sendJson(res, 500, { error: message });
+      return;
+    }
+
+    const card = this.config.agentCard;
+    const ident = getAgentIdentifier(card);
+    const base = (feed.publicUrl ?? card.url).replace(/\/+$/, '');
+    const isAtom = parsed.pathname === ATOM_FEED_PATH;
+
+    const options: FeedOptions = {
+      title: feed.title,
+      description: feed.description ?? card.description,
+      siteUrl: card.url,
+      feedUrl: `${base}${isAtom ? ATOM_FEED_PATH : JSON_FEED_PATH}`,
+      agentHandle: ident.handle,
+      agentId: ident.id,
+    };
+
+    const body = isAtom
+      ? renderAtomFeed(posts.slice(0, limit), options)
+      : renderJsonFeed(posts.slice(0, limit), options);
+
+    res.writeHead(200, {
+      'Content-Type': isAtom ? ATOM_CONTENT_TYPE : JSON_FEED_CONTENT_TYPE,
+      'Content-Length': Buffer.byteLength(body),
+      'Cache-Control': 'public, max-age=300',
+    });
+    res.end(body);
   }
 
   private async handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {

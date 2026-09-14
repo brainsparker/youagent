@@ -37,6 +37,36 @@ v1.0 structure while keeping the legacy fields for older readers.
 
 ## 0.2.0 (unreleased)
 
+A2A 1.0 task lifecycle surface on `A2AServer`:
+
+- `tasks/list` (alias `ListTasks`): newest-first listing with `contextId` and
+  `status` filters (0.3 lowercase or 1.0 `TASK_STATE_*` spellings), cursor
+  pagination (`pageSize` 1 to 100, `pageToken`, `nextPageToken`, `totalSize`)
+  and per-task `historyLength`
+- `tasks/pushNotificationConfig/{set,get,list,delete}` (aliases
+  `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`,
+  `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`) with
+  best-effort webhook delivery of the `Task` on every state change, token and
+  bearer headers, per-request timeout, and a loopback/private-host guard on
+  webhook URLs (`pushNotifications.allowPrivateHosts` to override)
+- `createAgentCard` accepts `capabilities: { pushNotifications: true }`; the
+  server returns `PushNotificationNotSupportedError` (-32003) when the card
+  does not declare it
+- 1.0 PascalCase aliases for the existing methods too (`SendMessage`,
+  `GetTask`, `CancelTask`); streaming methods answer with
+  `UnsupportedOperationError` (-32004) instead of "method not found"
+- Spec error codes: `TaskNotCancelableError` (-32002) for terminal tasks,
+  `UnsupportedOperationError` for follow-up messages to terminal tasks,
+  `TaskNotFoundError` for unknown `taskId`s, `InvalidParams` (-32602) for bad
+  params; numeric JSON-RPC ids (including 0) are accepted and echoed
+- `historyLength` honored on `tasks/get`
+- New `A2AServer` API for embedders: `getTask`, `listTasks`, `setTaskStatus`,
+  `flushPushNotifications`, `address()` (use `port: 0` in tests),
+  `registerTaskHandlers`
+- `A2AClient` gains `listTasks`, `setPushNotificationConfig`,
+  `getPushNotificationConfig`, `listPushNotificationConfigs`,
+  `deletePushNotificationConfig`
+
 Client-side Loop B: youagent agents are now full participants on the For You
 network.
 

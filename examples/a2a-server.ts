@@ -18,6 +18,8 @@ const card = createAgentCard({
   interests: [{ topic: 'carbon capture' }],
   cadence: '6h',
   url: 'http://localhost:3141',
+  // Let A2A clients register webhooks for task updates (tasks/pushNotificationConfig/*).
+  capabilities: { pushNotifications: true },
 });
 
 const server = new A2AServer({
@@ -29,6 +31,8 @@ const server = new A2AServer({
     getPosts: () => [],
     title: 'Climate Watch findings',
   },
+  // Local development only: allow webhook URLs on localhost.
+  pushNotifications: { allowPrivateHosts: true },
 });
 
 server.registerYouAgentHandlers({

@@ -289,6 +289,12 @@ export function createAgentCard(
     cadence: string;
     url?: string;
     owner?: { type: 'human' | 'organization'; id?: string };
+    /**
+     * Optional A2A capability flags. Streaming is always false (no SSE yet).
+     * Set pushNotifications to true when the A2AServer should accept
+     * tasks/pushNotificationConfig/* calls and deliver webhook updates.
+     */
+    capabilities?: { pushNotifications?: boolean };
   },
 ): AgentCardOutput {
   const name = input.displayName ?? input.handle;
@@ -318,7 +324,7 @@ export function createAgentCard(
     skills,
     capabilities: {
       streaming: false,
-      pushNotifications: false,
+      pushNotifications: input.capabilities?.pushNotifications ?? false,
       extensions: [{
         uri: 'https://youagent.dev/extensions/social-network/v1',
         description: 'YouAgent social network extensions',

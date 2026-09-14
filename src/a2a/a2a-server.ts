@@ -1,9 +1,14 @@
 /**
- * A2A server — JSON-RPC 2.0 based agent-to-agent message handling.
+ * A2A server: JSON-RPC 2.0 based agent-to-agent message handling.
+ *
+ * Implements the A2A task lifecycle surface: message/send, tasks/get,
+ * tasks/list, tasks/cancel and the four tasks/pushNotificationConfig methods,
+ * reachable under both the 0.3 method names and the 1.0 PascalCase aliases.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
+import type { AddressInfo } from 'node:net';
 import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
 import {
@@ -23,23 +28,31 @@ import {
   renderJsonFeed,
   type FeedOptions,
 } from '../feed/feed.js';
-import type {
-  JsonRpcRequest,
-  JsonRpcResponse,
-  JsonRpcError,
-  Message,
-  Task,
-  TaskStatus,
-  Artifact,
-  Part,
-  DataPart,
-  MessageSendParams,
-  TaskQueryParams,
-  TaskIdParams,
-  YouAgentFollowData,
-  YouAgentUnfollowData,
-  YouAgentPostsRequestData,
-  YouAgentPostsResponseData,
+import {
+  A2A_ERROR_CODES,
+  A2A_V1_METHOD_ALIASES,
+  isTerminalTaskState,
+  type JsonRpcRequest,
+  type JsonRpcResponse,
+  type JsonRpcError,
+  type JsonRpcId,
+  type Message,
+  type Task,
+  type TaskState,
+  type TaskStatus,
+  type Artifact,
+  type DataPart,
+  type MessageSendParams,
+  type TaskQueryParams,
+  type TaskIdParams,
+  type ListTasksParams,
+  type ListTasksResult,
+  type PushNotificationConfig,
+  type TaskPushNotificationConfig,
+  type YouAgentFollowData,
+  type YouAgentUnfollowData,
+  type YouAgentPostsRequestData,
+  type YouAgentPostsResponseData,
 } from './types.js';
 
 /** Handler function for an A2A JSON-RPC method. */
@@ -70,6 +83,27 @@ export interface A2AFeedConfig {
   publicUrl?: string;
 }
 
+/** Push notification (webhook) delivery options. */
+export interface PushNotificationOptions {
+  /**
+   * Whether push notification configs are accepted. Defaults to the card's
+   * capabilities.pushNotifications flag, which is what clients read.
+   */
+  enabled?: boolean;
+  /** Per-delivery timeout in milliseconds. Defaults to 5000. */
+  timeoutMs?: number;
+  /**
+   * Allow webhook URLs that resolve to loopback or private-network hosts.
+   * Off by default so a remote caller cannot point the agent at internal
+   * services. Turn on for local development and tests.
+   */
+  allowPrivateHosts?: boolean;
+  /** Called when a delivery attempt fails. Delivery is best-effort and never throws. */
+  onDeliveryError?: (error: unknown, config: TaskPushNotificationConfig) => void;
+  /** fetch implementation override (tests, custom agents). */
+  fetch?: typeof fetch;
+}
+
 /** Configuration for the A2A server. */
 export interface A2AServerConfig {
   /** Port to listen on. Defaults to 3141. Pass 0 to pick a free port. */
@@ -87,10 +121,16 @@ export interface A2AServerConfig {
    * on every fetch (the ETag still lets them get a 304).
    */
   cardMaxAgeSeconds?: number;
+  /** Webhook delivery settings for tasks/pushNotificationConfig. */
+  pushNotifications?: PushNotificationOptions;
 }
 
 const DEFAULT_PORT = 3141;
 const DEFAULT_CARD_MAX_AGE_SECONDS = 3600;
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
+const DEFAULT_PUSH_TIMEOUT_MS = 5_000;
+const PAGE_TOKEN_PREFIX = 'seq:';
 /** Legacy convenience alias for the agent card, kept for existing callers. */
 const CARD_ALIAS_PATH = '/agent-card';
 
@@ -100,39 +140,49 @@ export const ATOM_FEED_PATH = '/feed.xml';
 /** Path of the JSON Feed route. */
 export const JSON_FEED_PATH = '/feed.json';
 
-// JSON-RPC 2.0 standard error codes
-const PARSE_ERROR = -32700;
-const INVALID_REQUEST = -32600;
-const METHOD_NOT_FOUND = -32601;
-const INTERNAL_ERROR = -32603;
+const {
+  PARSE_ERROR,
+  INVALID_REQUEST,
+  METHOD_NOT_FOUND,
+  INVALID_PARAMS,
+  INTERNAL_ERROR,
+  TASK_NOT_FOUND,
+  TASK_NOT_CANCELABLE,
+  PUSH_NOTIFICATION_NOT_SUPPORTED,
+  UNSUPPORTED_OPERATION,
+} = A2A_ERROR_CODES;
+
+const STREAMING_METHODS: ReadonlySet<string> = new Set(['message/stream', 'tasks/resubscribe']);
+
+/** Build a JSON-RPC error object that the dispatcher forwards verbatim. */
+export function rpcError(code: number, message: string, data?: unknown): JsonRpcError {
+  return data === undefined ? { code, message } : { code, message, data };
+}
 
 /** HTTP server that receives and routes A2A JSON-RPC 2.0 messages. */
 export class A2AServer {
   private server: ReturnType<typeof createServer>;
   private handlers = new Map<string, A2AMethodHandler>();
   private tasks = new Map<string, Task>();
+  /** Monotonic creation sequence per task id, used for cursor pagination. */
+  private taskSeq = new Map<string, number>();
+  private nextSeq = 1;
+  /** taskId -> configId -> config */
+  private pushConfigs = new Map<string, Map<string, PushNotificationConfig>>();
+  private pendingDeliveries = new Set<Promise<void>>();
   private readonly port: number;
   private readonly cardMaxAgeSeconds: number;
+  private readonly pushOptions: PushNotificationOptions;
 
   constructor(private config: A2AServerConfig) {
     this.port = config.port ?? DEFAULT_PORT;
     this.cardMaxAgeSeconds = Math.max(0, Math.floor(config.cardMaxAgeSeconds ?? DEFAULT_CARD_MAX_AGE_SECONDS));
+    this.pushOptions = config.pushNotifications ?? {};
     this.server = createServer((req, res) => this.handleRequest(req, res));
+    this.registerTaskHandlers();
   }
 
-  /**
-   * The port the server is bound to, or null before `start()` resolves.
-   * Useful when the server was started with `port: 0`.
-   */
-  address(): { port: number } | null {
-    const addr = this.server.address();
-    if (addr && typeof addr === 'object') {
-      return { port: addr.port };
-    }
-    return null;
-  }
-
-  /** Register a handler for an A2A method (e.g., 'message/send'). */
+  /** Register a handler for an A2A method (e.g., 'message/send'). Overrides defaults. */
   onMethod(method: string, handler: A2AMethodHandler): void {
     this.handlers.set(method, handler);
   }
@@ -145,7 +195,11 @@ export class A2AServer {
     onMessage?: (message: Message) => Promise<Message>;
   }): void {
     this.onMethod('message/send', async (params: unknown) => {
-      const { message } = params as MessageSendParams;
+      const { message } = this.requireParams<MessageSendParams>(params, ['message']);
+      if (!message || !Array.isArray(message.parts)) {
+        throw rpcError(INVALID_PARAMS, 'message/send requires params.message with a parts array');
+      }
+      this.assertTaskAcceptsMessages(message);
 
       // Find YouAgent DataParts and route to social handlers
       for (const part of message.parts) {
@@ -193,29 +247,81 @@ export class A2AServer {
 
       return this.createTask(message, 'completed');
     });
+  }
 
+  /**
+   * Register the task lifecycle methods: tasks/get, tasks/list, tasks/cancel
+   * and tasks/pushNotificationConfig/{set,get,list,delete}. Called by the
+   * constructor; call again after onMethod overrides to restore defaults.
+   */
+  registerTaskHandlers(): void {
     this.onMethod('tasks/get', async (params: unknown) => {
-      const { id } = params as TaskQueryParams;
-      const task = this.tasks.get(id);
-      if (!task) {
-        const error: JsonRpcError = { code: -32001, message: `Task not found: ${id}` };
-        throw error;
-      }
-      return task;
+      const { id, historyLength } = this.requireParams<TaskQueryParams>(params, ['id']);
+      const task = this.requireTask(id);
+      return applyHistoryLength(task, this.parseHistoryLength(historyLength));
     });
 
+    this.onMethod('tasks/list', async (params: unknown) => this.listTasks((params ?? {}) as ListTasksParams));
+
     this.onMethod('tasks/cancel', async (params: unknown) => {
-      const { id } = params as TaskIdParams;
-      const task = this.tasks.get(id);
-      if (!task) {
-        const error: JsonRpcError = { code: -32001, message: `Task not found: ${id}` };
-        throw error;
+      const { id } = this.requireParams<TaskIdParams>(params, ['id']);
+      const task = this.requireTask(id);
+      if (isTerminalTaskState(task.status.state)) {
+        throw rpcError(TASK_NOT_CANCELABLE, `Task ${id} is already ${task.status.state}`);
       }
-      task.status = {
-        state: 'canceled',
-        timestamp: new Date().toISOString(),
-      };
-      return task;
+      return this.setTaskStatus(id, 'canceled');
+    });
+
+    this.onMethod('tasks/pushNotificationConfig/set', async (params: unknown, request) => {
+      this.assertPushSupported();
+      const { taskId, config } = this.parseSetPushParams(params);
+      this.requireTask(taskId);
+      this.validateWebhookUrl(config.url);
+      const stored: PushNotificationConfig = { ...config, id: config.id ?? uuidv4() };
+      let byId = this.pushConfigs.get(taskId);
+      if (!byId) {
+        byId = new Map();
+        this.pushConfigs.set(taskId, byId);
+      }
+      byId.set(stored.id as string, stored);
+      return this.shapePushConfig({ taskId, pushNotificationConfig: stored }, request.method);
+    });
+
+    this.onMethod('tasks/pushNotificationConfig/get', async (params: unknown, request) => {
+      this.assertPushSupported();
+      const { taskId, configId } = this.parsePushRefParams(params, false);
+      this.requireTask(taskId);
+      const byId = this.pushConfigs.get(taskId);
+      const config = configId ? byId?.get(configId) : byId?.values().next().value;
+      if (!config) {
+        throw rpcError(TASK_NOT_FOUND, `Push notification config not found for task ${taskId}`);
+      }
+      return this.shapePushConfig({ taskId, pushNotificationConfig: config }, request.method);
+    });
+
+    this.onMethod('tasks/pushNotificationConfig/list', async (params: unknown, request) => {
+      this.assertPushSupported();
+      const { taskId } = this.parsePushRefParams(params, false);
+      this.requireTask(taskId);
+      const configs = [...(this.pushConfigs.get(taskId)?.values() ?? [])].map((c) =>
+        this.shapePushConfig({ taskId, pushNotificationConfig: c }, request.method),
+      );
+      // 1.0 wraps the list; 0.3 returns the bare array.
+      return isV1Method(request.method) ? { configs, nextPageToken: '' } : configs;
+    });
+
+    this.onMethod('tasks/pushNotificationConfig/delete', async (params: unknown, request) => {
+      this.assertPushSupported();
+      const { taskId, configId } = this.parsePushRefParams(params, true);
+      this.requireTask(taskId);
+      const byId = this.pushConfigs.get(taskId);
+      if (!byId?.delete(configId as string)) {
+        throw rpcError(TASK_NOT_FOUND, `Push notification config ${configId} not found for task ${taskId}`);
+      }
+      if (byId.size === 0) {
+        this.pushConfigs.delete(taskId);
+      }
+      return isV1Method(request.method) ? {} : null;
     });
   }
 
@@ -240,14 +346,88 @@ export class A2AServer {
     return this.port;
   }
 
-  /** Stop the server gracefully. */
+  /** Stop the server gracefully. Waits for in-flight webhook deliveries first. */
   async stop(): Promise<void> {
+    await this.flushPushNotifications();
     return new Promise<void>((resolve, reject) => {
       this.server.close((err) => {
         if (err) reject(err);
         else resolve();
       });
     });
+  }
+
+  /** Bound address once started (useful with port 0). Null before start(). */
+  address(): AddressInfo | null {
+    const addr = this.server.address();
+    return addr && typeof addr === 'object' ? addr : null;
+  }
+
+  // ── Task store (public for embedders) ─────────────────────────────────
+
+  /** Look up a task by id, or undefined. */
+  getTask(taskId: string): Task | undefined {
+    return this.tasks.get(taskId);
+  }
+
+  /**
+   * List tasks newest first with optional contextId/status filters and
+   * cursor pagination (A2A 1.0 ListTasks semantics).
+   */
+  listTasks(params: ListTasksParams = {}): ListTasksResult {
+    const pageSize = this.parsePageSize(params.pageSize);
+    const afterSeq = this.parsePageToken(params.pageToken);
+    const historyLength = this.parseHistoryLength(params.historyLength);
+    const status = params.status === undefined ? undefined : normalizeTaskState(params.status);
+
+    const matching = [...this.tasks.values()]
+      .filter((t) => params.contextId === undefined || t.contextId === params.contextId)
+      .filter((t) => status === undefined || t.status.state === status)
+      .sort((a, b) => (this.taskSeq.get(b.id) ?? 0) - (this.taskSeq.get(a.id) ?? 0));
+
+    const remaining =
+      afterSeq === undefined ? matching : matching.filter((t) => (this.taskSeq.get(t.id) ?? 0) < afterSeq);
+    const page = remaining.slice(0, pageSize);
+    const hasMore = remaining.length > page.length;
+    const last = page[page.length - 1];
+    const nextPageToken =
+      hasMore && last ? encodePageToken(this.taskSeq.get(last.id) ?? 0) : '';
+
+    return {
+      tasks: page.map((t) => applyHistoryLength(t, historyLength)),
+      nextPageToken,
+      pageSize,
+      totalSize: matching.length,
+    };
+  }
+
+  /**
+   * Move a task to a new state and notify its push subscribers. Embedders
+   * drive long-running work with this; it does not enforce terminal-state
+   * rules (tasks/cancel over the wire does).
+   */
+  setTaskStatus(taskId: string, state: TaskState, message?: Message): Task {
+    const task = this.requireTask(taskId);
+    const status: TaskStatus = { state, timestamp: new Date().toISOString() };
+    if (message) {
+      status.message = message;
+      task.history = [...(task.history ?? []), message];
+    }
+    task.status = status;
+    this.notifyPushSubscribers(task);
+    return task;
+  }
+
+  /** Resolve once every webhook delivery started so far has settled. */
+  async flushPushNotifications(): Promise<void> {
+    while (this.pendingDeliveries.size > 0) {
+      await Promise.allSettled([...this.pendingDeliveries]);
+    }
+  }
+
+  /** Whether the server accepts push notification configs. */
+  get pushNotificationsEnabled(): boolean {
+    return this.pushOptions.enabled ?? this.config.agentCard.capabilities?.pushNotifications === true;
   }
 
   // ── Private ────────────────────────────────────────────────────────────
@@ -282,7 +462,203 @@ export class A2AServer {
     };
 
     this.tasks.set(taskId, task);
+    if (!this.taskSeq.has(taskId)) {
+      this.taskSeq.set(taskId, this.nextSeq++);
+    }
+    this.notifyPushSubscribers(task);
     return task;
+  }
+
+  /** A follow-up message must target an existing, non-terminal task. */
+  private assertTaskAcceptsMessages(message: Message): void {
+    if (!message.taskId) return;
+    const task = this.tasks.get(message.taskId);
+    if (!task) {
+      throw rpcError(TASK_NOT_FOUND, `Task not found: ${message.taskId}`);
+    }
+    if (isTerminalTaskState(task.status.state)) {
+      throw rpcError(
+        UNSUPPORTED_OPERATION,
+        `Task ${message.taskId} is ${task.status.state} and no longer accepts messages`,
+      );
+    }
+  }
+
+  private requireTask(taskId: unknown): Task {
+    if (typeof taskId !== 'string' || taskId.length === 0) {
+      throw rpcError(INVALID_PARAMS, 'Task id must be a non-empty string');
+    }
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw rpcError(TASK_NOT_FOUND, `Task not found: ${taskId}`);
+    }
+    return task;
+  }
+
+  private requireParams<T extends object>(params: unknown, keys: Array<keyof T>): T {
+    if (!params || typeof params !== 'object') {
+      throw rpcError(INVALID_PARAMS, 'Missing params object');
+    }
+    for (const key of keys) {
+      if ((params as Record<string, unknown>)[key as string] === undefined) {
+        throw rpcError(INVALID_PARAMS, `Missing required param: ${String(key)}`);
+      }
+    }
+    return params as T;
+  }
+
+  private parsePageSize(value: unknown): number {
+    if (value === undefined || value === null) return DEFAULT_PAGE_SIZE;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      throw rpcError(INVALID_PARAMS, 'pageSize must be an integer of at least 1');
+    }
+    return Math.min(value, MAX_PAGE_SIZE);
+  }
+
+  private parsePageToken(value: unknown): number | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value !== 'string') {
+      throw rpcError(INVALID_PARAMS, 'pageToken must be a string');
+    }
+    const seq = decodePageToken(value);
+    if (seq === undefined) {
+      throw rpcError(INVALID_PARAMS, 'pageToken is not a token issued by this server');
+    }
+    return seq;
+  }
+
+  private parseHistoryLength(value: unknown): number | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      throw rpcError(INVALID_PARAMS, 'historyLength must be a non-negative integer');
+    }
+    return value;
+  }
+
+  private assertPushSupported(): void {
+    if (!this.pushNotificationsEnabled) {
+      throw rpcError(
+        PUSH_NOTIFICATION_NOT_SUPPORTED,
+        'Push notifications are not supported by this agent (capabilities.pushNotifications is false)',
+      );
+    }
+  }
+
+  /**
+   * Accept both the 0.3 nested shape { taskId, pushNotificationConfig: {...} }
+   * and the 1.0 flattened shape { taskId, id?, url, token?, authentication? }.
+   */
+  private parseSetPushParams(params: unknown): { taskId: string; config: PushNotificationConfig } {
+    const p = this.requireParams<Record<string, unknown>>(params, ['taskId']);
+    const raw = (p.pushNotificationConfig ?? p) as Record<string, unknown>;
+    if (typeof raw.url !== 'string') {
+      throw rpcError(INVALID_PARAMS, 'pushNotificationConfig.url must be a string');
+    }
+    if (raw.id !== undefined && typeof raw.id !== 'string') {
+      throw rpcError(INVALID_PARAMS, 'pushNotificationConfig.id must be a string');
+    }
+    if (raw.token !== undefined && typeof raw.token !== 'string') {
+      throw rpcError(INVALID_PARAMS, 'pushNotificationConfig.token must be a string');
+    }
+    const auth = raw.authentication as Record<string, unknown> | undefined;
+    if (auth !== undefined) {
+      if (!auth || typeof auth !== 'object' || !Array.isArray(auth.schemes)) {
+        throw rpcError(INVALID_PARAMS, 'pushNotificationConfig.authentication.schemes must be an array');
+      }
+      if (auth.credentials !== undefined && typeof auth.credentials !== 'string') {
+        throw rpcError(INVALID_PARAMS, 'pushNotificationConfig.authentication.credentials must be a string');
+      }
+    }
+    const config: PushNotificationConfig = { url: raw.url };
+    if (raw.id !== undefined) config.id = raw.id as string;
+    if (raw.token !== undefined) config.token = raw.token as string;
+    if (auth) {
+      config.authentication = { schemes: auth.schemes as string[] };
+      if (auth.credentials !== undefined) config.authentication.credentials = auth.credentials as string;
+    }
+    return { taskId: p.taskId as string, config };
+  }
+
+  /**
+   * Resolve task id and config id from either wire shape:
+   * 0.3: { id: taskId, pushNotificationConfigId? }
+   * 1.0: { taskId, id?: configId }
+   */
+  private parsePushRefParams(
+    params: unknown,
+    configRequired: boolean,
+  ): { taskId: string; configId?: string } {
+    const p = this.requireParams<Record<string, unknown>>(params, []);
+    const taskId = (p.taskId ?? p.id) as unknown;
+    const configId = (p.pushNotificationConfigId ?? (p.taskId !== undefined ? p.id : undefined)) as unknown;
+    if (typeof taskId !== 'string' || taskId.length === 0) {
+      throw rpcError(INVALID_PARAMS, 'Task id must be a non-empty string');
+    }
+    if (configId !== undefined && typeof configId !== 'string') {
+      throw rpcError(INVALID_PARAMS, 'Push notification config id must be a string');
+    }
+    if (configRequired && !configId) {
+      throw rpcError(INVALID_PARAMS, 'Push notification config id is required');
+    }
+    return { taskId, configId: configId as string | undefined };
+  }
+
+  /** 0.3 methods return the nested shape; 1.0 aliases return the flattened one. */
+  private shapePushConfig(entry: TaskPushNotificationConfig, method: string): unknown {
+    if (!isV1Method(method)) return entry;
+    return { taskId: entry.taskId, ...entry.pushNotificationConfig };
+  }
+
+  private validateWebhookUrl(url: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw rpcError(INVALID_PARAMS, `Webhook URL is not a valid URL: ${url}`);
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw rpcError(INVALID_PARAMS, 'Webhook URL must use http or https');
+    }
+    if (!this.pushOptions.allowPrivateHosts && isPrivateHost(parsed.hostname)) {
+      throw rpcError(
+        INVALID_PARAMS,
+        'Webhook URL must not target loopback or private-network hosts (set pushNotifications.allowPrivateHosts to override)',
+      );
+    }
+  }
+
+  /** POST the task to every webhook registered for it. Best-effort, never throws. */
+  private notifyPushSubscribers(task: Task): void {
+    const byId = this.pushConfigs.get(task.id);
+    if (!byId || byId.size === 0 || !this.pushNotificationsEnabled) return;
+    const fetchImpl = this.pushOptions.fetch ?? globalThis.fetch;
+    const timeoutMs = this.pushOptions.timeoutMs ?? DEFAULT_PUSH_TIMEOUT_MS;
+    const body = JSON.stringify(task);
+
+    for (const config of byId.values()) {
+      const entry: TaskPushNotificationConfig = { taskId: task.id, pushNotificationConfig: config };
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (config.token) headers['X-A2A-Notification-Token'] = config.token;
+      const auth = config.authentication;
+      if (auth?.credentials && auth.schemes.some((s) => s.toLowerCase() === 'bearer')) {
+        headers['Authorization'] = `Bearer ${auth.credentials}`;
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const delivery = fetchImpl(config.url, { method: 'POST', headers, body, signal: controller.signal })
+        .then((res) => {
+          if (!res.ok) throw new Error(`Webhook responded HTTP ${res.status}`);
+        })
+        .catch((err: unknown) => {
+          this.pushOptions.onDeliveryError?.(err, entry);
+        })
+        .finally(() => {
+          clearTimeout(timer);
+          this.pendingDeliveries.delete(delivery);
+        });
+      this.pendingDeliveries.add(delivery);
+    }
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -444,20 +820,34 @@ export class A2AServer {
       return;
     }
 
-    // Validate JSON-RPC structure
-    if (request.jsonrpc !== '2.0' || !request.id || !request.method) {
+    // Validate JSON-RPC structure (ids may be strings or numbers, including 0)
+    const hasId =
+      request !== null &&
+      typeof request === 'object' &&
+      (typeof request.id === 'string' || typeof request.id === 'number');
+    if (!hasId || request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
       this.sendJsonRpcError(
         res,
-        request.id ?? null,
+        hasId ? request.id : null,
         INVALID_REQUEST,
         'Invalid JSON-RPC 2.0 request: missing jsonrpc, id, or method',
       );
       return;
     }
 
-    // Route to handler
-    const handler = this.handlers.get(request.method);
+    // Route to handler, accepting 1.0 PascalCase aliases
+    const canonical = A2A_V1_METHOD_ALIASES[request.method] ?? request.method;
+    const handler = this.handlers.get(canonical);
     if (!handler) {
+      if (STREAMING_METHODS.has(canonical)) {
+        this.sendJsonRpcError(
+          res,
+          request.id,
+          UNSUPPORTED_OPERATION,
+          `${request.method} is not supported: this agent does not stream (capabilities.streaming is false)`,
+        );
+        return;
+      }
       this.sendJsonRpcError(res, request.id, METHOD_NOT_FOUND, `Method not found: ${request.method}`);
       return;
     }
@@ -473,8 +863,8 @@ export class A2AServer {
     } catch (err) {
       if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
         // Already a JsonRpcError-shaped object
-        const rpcError = err as JsonRpcError;
-        this.sendJsonRpcError(res, request.id, rpcError.code, rpcError.message, rpcError.data);
+        const rpcErr = err as JsonRpcError;
+        this.sendJsonRpcError(res, request.id, rpcErr.code, rpcErr.message, rpcErr.data);
       } else {
         const message = err instanceof Error ? err.message : 'Internal error';
         this.sendJsonRpcError(res, request.id, INTERNAL_ERROR, message);
@@ -484,15 +874,15 @@ export class A2AServer {
 
   private sendJsonRpcError(
     res: ServerResponse,
-    id: string | null,
+    id: JsonRpcId | null,
     code: number,
     message: string,
     data?: unknown,
   ): void {
     const response: JsonRpcResponse = {
       jsonrpc: '2.0',
-      id: id ?? '',
-      error: { code, message, data },
+      id,
+      error: rpcError(code, message, data),
     };
     this.sendJson(res, 200, response);
   }
@@ -514,4 +904,104 @@ export class A2AServer {
     });
     res.end(body);
   }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+/** True for A2A 1.0 PascalCase method names. */
+function isV1Method(method: string): boolean {
+  return method in A2A_V1_METHOD_ALIASES;
+}
+
+/**
+ * Accept "working", "TASK_STATE_WORKING" or "TASK_STATE_INPUT_REQUIRED" and
+ * return the 0.3 lowercase state youagent stores. Unknown values raise
+ * InvalidParams.
+ */
+export function normalizeTaskState(value: string): TaskState {
+  const lowered = value.replace(/^TASK_STATE_/, '').toLowerCase().replace(/_/g, '-');
+  const known: TaskState[] = [
+    'submitted',
+    'working',
+    'input-required',
+    'auth-required',
+    'completed',
+    'canceled',
+    'failed',
+    'rejected',
+  ];
+  if ((known as string[]).includes(lowered)) {
+    return lowered as TaskState;
+  }
+  throw rpcError(INVALID_PARAMS, `Unknown task state: ${value}`);
+}
+
+/** Apply A2A historyLength semantics: unset = all, 0 = omit, n = last n. */
+export function applyHistoryLength(task: Task, historyLength: number | undefined): Task {
+  if (historyLength === undefined) return task;
+  if (historyLength === 0) {
+    const { history: _history, ...rest } = task;
+    return rest;
+  }
+  return { ...task, history: (task.history ?? []).slice(-historyLength) };
+}
+
+function encodePageToken(seq: number): string {
+  return Buffer.from(`${PAGE_TOKEN_PREFIX}${seq}`, 'utf-8').toString('base64url');
+}
+
+function decodePageToken(token: string): number | undefined {
+  let decoded: string;
+  try {
+    decoded = Buffer.from(token, 'base64url').toString('utf-8');
+  } catch {
+    return undefined;
+  }
+  if (!decoded.startsWith(PAGE_TOKEN_PREFIX)) return undefined;
+  const seq = Number(decoded.slice(PAGE_TOKEN_PREFIX.length));
+  return Number.isInteger(seq) && seq > 0 ? seq : undefined;
+}
+
+/** True for a dotted-quad IPv4 string in a loopback / private / link-local range. */
+function isPrivateIpv4(host: string): boolean {
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!v4) return false;
+  const [a, b] = [Number(v4[1]), Number(v4[2])];
+  return (
+    a === 127 ||
+    a === 10 ||
+    a === 0 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254)
+  );
+}
+
+/**
+ * Pull the embedded IPv4 out of an IPv4-mapped or IPv4-compatible IPv6
+ * address. `new URL()` canonicalizes `[::ffff:127.0.0.1]` to `::ffff:7f00:1`,
+ * so the dotted form alone is not enough to catch a loopback target.
+ */
+function mappedIpv4(host: string): string | undefined {
+  const m = host.match(/^::(?:ffff:)?(?:0{1,4}:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (m) {
+    const hi = parseInt(m[1], 16);
+    const lo = parseInt(m[2], 16);
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  const dotted = host.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  return dotted ? dotted[1] : undefined;
+}
+
+/** Loopback, link-local and RFC 1918 / RFC 4193 hosts. */
+export function isPrivateHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0') return true;
+  if (host === '::1' || host === '::' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80')) {
+    return true;
+  }
+  // IPv4-mapped IPv6 (::ffff:7f00:1) reaches the same host as 127.0.0.1.
+  const mapped = mappedIpv4(host);
+  if (mapped) return isPrivateIpv4(mapped);
+  return isPrivateIpv4(host);
 }

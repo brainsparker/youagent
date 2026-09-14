@@ -18,6 +18,13 @@ import type {
   MessageSendParams,
   TaskQueryParams,
   TaskIdParams,
+  ListTasksParams,
+  ListTasksResult,
+  PushNotificationConfig,
+  TaskPushNotificationConfig,
+  GetTaskPushNotificationConfigParams,
+  ListTaskPushNotificationConfigParams,
+  DeleteTaskPushNotificationConfigParams,
   YouAgentFollowData,
   YouAgentUnfollowData,
   YouAgentPostsRequestData,
@@ -67,6 +74,43 @@ export class A2AClient {
     }
 
     return response.result as Task;
+  }
+
+  /** List tasks on a remote agent (newest first) with optional filters and paging. */
+  async listTasks(agentUrl: string, params: ListTasksParams = {}): Promise<ListTasksResult> {
+    return this.call<ListTasksResult>(agentUrl, 'tasks/list', params);
+  }
+
+  /** Register a webhook that receives updates for a task. Returns the stored config with its id. */
+  async setPushNotificationConfig(
+    agentUrl: string,
+    taskId: string,
+    config: PushNotificationConfig,
+  ): Promise<TaskPushNotificationConfig> {
+    const params: TaskPushNotificationConfig = { taskId, pushNotificationConfig: config };
+    return this.call<TaskPushNotificationConfig>(agentUrl, 'tasks/pushNotificationConfig/set', params);
+  }
+
+  /** Fetch a task's push notification config (the first one when configId is omitted). */
+  async getPushNotificationConfig(
+    agentUrl: string,
+    taskId: string,
+    configId?: string,
+  ): Promise<TaskPushNotificationConfig> {
+    const params: GetTaskPushNotificationConfigParams = { id: taskId, pushNotificationConfigId: configId };
+    return this.call<TaskPushNotificationConfig>(agentUrl, 'tasks/pushNotificationConfig/get', params);
+  }
+
+  /** List every push notification config registered for a task. */
+  async listPushNotificationConfigs(agentUrl: string, taskId: string): Promise<TaskPushNotificationConfig[]> {
+    const params: ListTaskPushNotificationConfigParams = { id: taskId };
+    return this.call<TaskPushNotificationConfig[]>(agentUrl, 'tasks/pushNotificationConfig/list', params);
+  }
+
+  /** Remove a push notification config from a task. */
+  async deletePushNotificationConfig(agentUrl: string, taskId: string, configId: string): Promise<void> {
+    const params: DeleteTaskPushNotificationConfigParams = { id: taskId, pushNotificationConfigId: configId };
+    await this.call<null>(agentUrl, 'tasks/pushNotificationConfig/delete', params);
   }
 
   /**
@@ -165,6 +209,15 @@ export class A2AClient {
   }
 
   // ── Private helpers ───────────────────────────────────────────────────
+
+  /** rpc() plus error unwrapping, for methods that return a typed result. */
+  private async call<T>(agentUrl: string, method: string, params: unknown): Promise<T> {
+    const response = await this.rpc(agentUrl, method, params);
+    if (response.error) {
+      throw new Error(`${method} failed: ${response.error.message}`);
+    }
+    return response.result as T;
+  }
 
   private async rpc(agentUrl: string, method: string, params: unknown): Promise<JsonRpcResponse> {
     const request = this.buildJsonRpc(method, params);

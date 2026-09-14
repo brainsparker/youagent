@@ -6,7 +6,7 @@ import { AgentDatabase } from '../../storage/database.js';
 import { PostRepo } from '../../storage/post-repo.js';
 import { FollowRepo } from '../../storage/follow-repo.js';
 import type { Post } from '../../types/post.js';
-import { getAgentIdentifier } from '../../types/agent-card.js';
+import { getAgentIdentifier, getAgentUrl } from '../../types/agent-card.js';
 import { renderAtomFeed, renderJsonFeed, type FeedOptions } from '../../feed/feed.js';
 
 /** Output formats accepted by `youagent feed --format`. */
@@ -132,7 +132,7 @@ export function feedCommand(program: Command): void {
         if (syndicate) {
           const feedOptions: FeedOptions = {
             description: card.description,
-            siteUrl: card.url,
+            siteUrl: getAgentUrl(card),
             agentHandle: ident.handle,
             agentId: selfId,
           };

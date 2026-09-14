@@ -11,6 +11,7 @@ import {
   A2A_LEGACY_WELL_KNOWN_PATH,
   A2A_WELL_KNOWN_PATH,
   getAgentIdentifier,
+  getAgentUrl,
 } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import {
@@ -348,13 +349,14 @@ export class A2AServer {
 
     const card = this.config.agentCard;
     const ident = getAgentIdentifier(card);
-    const base = (feed.publicUrl ?? card.url).replace(/\/+$/, '');
+    const cardUrl = getAgentUrl(card);
+    const base = (feed.publicUrl ?? cardUrl).replace(/\/+$/, '');
     const isAtom = parsed.pathname === ATOM_FEED_PATH;
 
     const options: FeedOptions = {
       title: feed.title,
       description: feed.description ?? card.description,
-      siteUrl: card.url,
+      siteUrl: cardUrl,
       feedUrl: `${base}${isAtom ? ATOM_FEED_PATH : JSON_FEED_PATH}`,
       agentHandle: ident.handle,
       agentId: ident.id,

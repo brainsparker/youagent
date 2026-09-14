@@ -27,7 +27,7 @@ function textMessage(text: string, extra: Partial<Message> = {}): Message {
   return {
     role: 'user',
     messageId: `msg-${Math.random().toString(36).slice(2)}`,
-    parts: [{ type: 'text', text }],
+    parts: [{ kind: 'text', text }],
     ...extra,
   };
 }
@@ -95,7 +95,7 @@ describe('A2AServer task lifecycle', () => {
     server.setTaskStatus(task.id, 'working', {
       role: 'agent',
       messageId: 'reply-1',
-      parts: [{ type: 'text', text: 'ack' }],
+      parts: [{ kind: 'text', text: 'ack' }],
     });
 
     const full = (await rpc(url, 'tasks/get', { id: task.id })).result as Task;

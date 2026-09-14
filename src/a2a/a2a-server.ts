@@ -19,6 +19,7 @@ import {
   getAgentUrl,
 } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
+import { normalizeMessage } from './compat.js';
 import {
   ATOM_CONTENT_TYPE,
   DEFAULT_FEED_LIMIT,
@@ -195,15 +196,22 @@ export class A2AServer {
     onMessage?: (message: Message) => Promise<Message>;
   }): void {
     this.onMethod('message/send', async (params: unknown) => {
-      const { message } = this.requireParams<MessageSendParams>(params, ['message']);
-      if (!message || !Array.isArray(message.parts)) {
+      const raw = this.requireParams<MessageSendParams>(params, ['message']);
+      if (!raw.message || !Array.isArray(raw.message.parts)) {
         throw rpcError(INVALID_PARAMS, 'message/send requires params.message with a parts array');
+      }
+      // Accept pre-0.2 peers that still send `type`-discriminated parts.
+      let message: Message;
+      try {
+        message = normalizeMessage(raw.message);
+      } catch (err) {
+        throw rpcError(INVALID_PARAMS, err instanceof Error ? err.message : 'invalid message');
       }
       this.assertTaskAcceptsMessages(message);
 
       // Find YouAgent DataParts and route to social handlers
       for (const part of message.parts) {
-        if (part.type === 'data') {
+        if (part.kind === 'data') {
           const dataType = (part.data as Record<string, unknown>).type as string | undefined;
 
           if (dataType === 'youagent/follow' && options.onFollow) {
@@ -226,10 +234,11 @@ export class A2AServer {
               posts,
             };
             const artifact: Artifact = {
+              artifactId: uuidv4(),
               name: 'posts',
               parts: [
                 {
-                  type: 'data',
+                  kind: 'data',
                   data: responseData as unknown as Record<string, unknown>,
                 } satisfies DataPart,
               ],
@@ -454,6 +463,7 @@ export class A2AServer {
     }
 
     const task: Task = {
+      kind: 'task',
       id: taskId,
       contextId,
       status,

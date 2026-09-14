@@ -87,19 +87,19 @@ export const A2A_ERROR_CODES = {
 } as const;
 
 export interface TextPart {
-  type: 'text';
+  kind: 'text';
   text: string;
   metadata?: Record<string, unknown>;
 }
 
 export interface FilePart {
-  type: 'file';
+  kind: 'file';
   file: { name?: string; mimeType?: string; uri?: string; bytes?: string };
   metadata?: Record<string, unknown>;
 }
 
 export interface DataPart {
-  type: 'data';
+  kind: 'data';
   data: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
@@ -107,6 +107,8 @@ export interface DataPart {
 export type Part = TextPart | FilePart | DataPart;
 
 export interface Message {
+  /** Object discriminator required by the A2A spec. */
+  kind?: 'message';
   role: 'user' | 'agent';
   parts: Part[];
   messageId: string;
@@ -146,6 +148,8 @@ export interface TaskStatus {
 }
 
 export interface Task {
+  /** Object discriminator required by the A2A spec. */
+  kind?: 'task';
   id: string;
   contextId: string;
   status: TaskStatus;
@@ -155,6 +159,8 @@ export interface Task {
 }
 
 export interface Artifact {
+  /** Required by the A2A spec; generated on ingest when a peer omits it. */
+  artifactId?: string;
   name?: string;
   description?: string;
   parts: Part[];

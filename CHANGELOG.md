@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+A2A wire-format compliance for message parts. The A2A specification has
+discriminated parts with `kind` since v0.1; youagent emitted a `type`
+field that was never in the spec at any version, so spec-conformant
+clients could not read its messages.
+
+- `TextPart`, `FilePart` and `DataPart` use the spec `kind` discriminator
+  (`text` / `file` / `data`) instead of `type`
+- Messages carry `kind: 'message'`, tasks carry `kind: 'task'`, and
+  artifacts carry the spec-required `artifactId`
+- New `src/a2a/compat.ts` normalizes every ingest boundary (server
+  `message/send`, client task responses): parts arriving with the legacy
+  `type` discriminator are accepted and rewritten, `kind` wins when both
+  are present, and a part with neither fails with `InvalidParams` (-32602)
+  rather than being silently dropped
+- Breaking for code that constructs parts directly: `{ type: 'text' }`
+  becomes `{ kind: 'text' }`. Parts received over the wire need no change
+
 A2A v1.0 Agent Card compatibility. The A2A specification reached 1.0 in
 March 2026 and restructured the Agent Card; a v0.x card parses fine but
 gives a v1.0 client no addressable interface. YouAgent cards now carry the

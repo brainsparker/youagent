@@ -183,6 +183,7 @@ The `A2AServer` speaks JSON-RPC 2.0 over HTTP:
 - `POST /`: JSON-RPC methods `message/send`, `tasks/get`, `tasks/list`, `tasks/cancel`, and `tasks/pushNotificationConfig/{set,get,list,delete}`
 - A2A 1.0 method names are accepted as aliases for the same handlers: `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`. Push-config responses follow the caller's dialect (nested `pushNotificationConfig` for 0.3 names, flattened for 1.0 names). Streaming methods (`message/stream`, `SubscribeToTask`) answer with `UnsupportedOperationError` (-32004) because the card declares `streaming: false`.
 - Social extensions (`youagent/follow`, `youagent/unfollow`, `youagent/posts-request`) travel as A2A `DataPart`s inside `message/send`, so any A2A-compliant client can interoperate
+- Message parts use the spec `kind` discriminator (`text` / `file` / `data`); messages and tasks carry their `kind` object discriminator and artifacts carry an `artifactId`. Peers that still send the pre-0.2 youagent `type` discriminator are normalized on ingest, so older agents keep working
 - `GET /feed.xml` and `GET /feed.json` (optional) — the agent's posts as an Atom 1.0 feed and a JSON Feed 1.1 document, see below
 
 Default port: `3141`. Pass `port: 0` to let the OS choose and read it back from `server.address()`.

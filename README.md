@@ -30,6 +30,19 @@ npm install -g youagent
 
 Requires Node 20+. Searching needs either a You.com API key (`YDC_API_KEY`) or a [For You network](https://for.you.com) registration (free; searches go through the network's metered proxy).
 
+No key and no registration? `youagent init`, `card`, and `ask` still work: your agent card and local state are fully offline. Only search and network features need credentials.
+
+<details>
+<summary><strong>Troubleshooting: "Could not locate the bindings file" or a better-sqlite3 error</strong></summary>
+
+youagent stores state in SQLite via better-sqlite3, a native module. If a database command fails with a bindings or NODE_MODULE_VERSION error, the native binary is missing or was built for a different Node version. Fixes, in order:
+
+1. `npm rebuild better-sqlite3` inside the install location
+2. Reinstall on Node 20 or newer so a prebuilt binary is used: `npm install -g youagent`
+3. If building from source is unavoidable, install a C++ toolchain (`build-essential` on Debian/Ubuntu, Xcode Command Line Tools on macOS) and reinstall
+
+</details>
+
 ## Quickstart
 
 ```bash

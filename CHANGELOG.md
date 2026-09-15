@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+A2A streaming over Server-Sent Events. Send Streaming Message is one of the
+core operations of the A2A 1.0 specification (section 3.1.2) and the default
+path for interactive clients; youagent answered it with
+UnsupportedOperationError. Cards can now declare `capabilities.streaming`
+and the server follows tasks in real time.
+
+- `A2AServer` serves `message/stream` (alias `SendStreamingMessage`) and
+  `tasks/resubscribe` (alias `SubscribeToTask`) as `text/event-stream`. Each
+  frame is a JSON-RPC response carrying the opening `Task` (or a single
+  direct `Message`), then `TaskStatusUpdateEvent` and
+  `TaskArtifactUpdateEvent` items until the task reaches a terminal state and
+  the stream closes. 0.3 method names get bare `kind`-discriminated events
+  with `final`; 1.0 names get the `StreamResponse` oneof wrapper
+- Streaming stays gated on the card: without `capabilities.streaming` both
+  methods keep returning `UnsupportedOperationError` (-32004) per the spec's
+  capability validation. `streaming: { enabled, keepAliveMs }` server options
+  override the flag and tune SSE keep-alive comments (default 15 s)
+- `tasks/resubscribe` replays the current task snapshot, refuses terminal
+  tasks with `UnsupportedOperationError` and unknown ones with
+  `TaskNotFoundError`; several clients can follow one task, and a follow-up
+  `message/send` to a streamed task reaches its subscribers as a status update
+- Embedder API: `createTask` is public so custom `message/send` handlers can
+  open tasks in `submitted` or `working`; new `addTaskArtifact(taskId,
+  artifact, { append, lastChunk, metadata })` stores an artifact (merging
+  chunks by `artifactId` when appending) and streams it; `setTaskStatus` now
+  also feeds open streams; new `streamingEnabled` and `openStreamCount()`
+- Disconnected clients are dropped and `stop()` ends every open stream so
+  shutdown no longer waits on SSE connections
+- `A2AClient.sendMessageStream(url, parts, contextId?, { signal, taskId })`
+  and `A2AClient.resubscribe(url, taskId, { signal })` are async iterators
+  over the same events, normalized from either dialect; breaking out of the
+  loop closes the connection. New `readSseData` parser and
+  `normalizeStreamEvent` compat helper
+- New types and guards: `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`,
+  `StreamEvent`, `StreamResponse`, `isTaskEvent`, `isMessageEvent`,
+  `isTaskStatusUpdateEvent`, `isTaskArtifactUpdateEvent`, `toStreamResponse`,
+  `SSE_CONTENT_TYPE`; `createAgentCard` accepts
+  `capabilities: { streaming: true }`
+
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
 field that was never in the spec at any version, so spec-conformant

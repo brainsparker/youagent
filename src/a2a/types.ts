@@ -52,8 +52,9 @@ export type A2AMethod =
 
 /**
  * A2A 1.0 method names mapped to the 0.3 names the server registers handlers
- * under. Streaming methods are included so they can be answered with a
- * proper UnsupportedOperationError instead of "method not found".
+ * under. The streaming pair (`SendStreamingMessage`, `SubscribeToTask`) is
+ * served over SSE when the card declares `capabilities.streaming` and
+ * answered with UnsupportedOperationError otherwise.
  */
 export const A2A_V1_METHOD_ALIASES: Readonly<Record<string, A2AMethod>> = {
   SendMessage: 'message/send',
@@ -165,6 +166,78 @@ export interface Artifact {
   description?: string;
   parts: Part[];
   metadata?: Record<string, unknown>;
+}
+
+// ── Streaming events (message/stream, tasks/resubscribe) ────────────────
+
+/**
+ * Emitted on a task stream when the task's status changes (spec section
+ * 4.2.1). `final` is the 0.3 field that marks the closing event; the 1.0
+ * StreamResponse wrapper omits it and closes the stream instead.
+ */
+export interface TaskStatusUpdateEvent {
+  kind: 'status-update';
+  taskId: string;
+  contextId: string;
+  status: TaskStatus;
+  /** True on the last event of the stream (the task reached a terminal state). */
+  final: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Emitted on a task stream when an artifact is produced or extended (spec
+ * section 4.2.2).
+ */
+export interface TaskArtifactUpdateEvent {
+  kind: 'artifact-update';
+  taskId: string;
+  contextId: string;
+  artifact: Artifact;
+  /** When true, append these parts to the previously sent artifact with the same artifactId. */
+  append?: boolean;
+  /** When true, no more chunks follow for this artifact. */
+  lastChunk?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * One item on a task stream, in the 0.3 shape youagent speaks natively: the
+ * opening `Task` (or a single direct `Message`), then status and artifact
+ * update events until the task reaches a terminal state.
+ */
+export type StreamEvent = Task | Message | TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
+
+/**
+ * A2A 1.0 `StreamResponse`: a oneof wrapper around the stream item. The
+ * server emits this shape when the caller used a 1.0 method name
+ * (`SendStreamingMessage`, `SubscribeToTask`); the client accepts both.
+ */
+export interface StreamResponse {
+  task?: Task;
+  message?: Message;
+  statusUpdate?: Omit<TaskStatusUpdateEvent, 'kind' | 'final'>;
+  artifactUpdate?: Omit<TaskArtifactUpdateEvent, 'kind'>;
+}
+
+/** True for a status-update stream event. */
+export function isTaskStatusUpdateEvent(event: StreamEvent): event is TaskStatusUpdateEvent {
+  return (event as TaskStatusUpdateEvent).kind === 'status-update';
+}
+
+/** True for an artifact-update stream event. */
+export function isTaskArtifactUpdateEvent(event: StreamEvent): event is TaskArtifactUpdateEvent {
+  return (event as TaskArtifactUpdateEvent).kind === 'artifact-update';
+}
+
+/** True when the stream item is the opening (or refreshed) Task snapshot. */
+export function isTaskEvent(event: StreamEvent): event is Task {
+  return (event as Task).kind === 'task' || ('status' in event && 'id' in event && !('kind' in event));
+}
+
+/** True when the stream item is a direct Message (message-only streams). */
+export function isMessageEvent(event: StreamEvent): event is Message {
+  return (event as Message).kind === 'message' || ('role' in event && 'parts' in event && !('status' in event));
 }
 
 // ── Request/Response params ─────────────────────────────────────────────

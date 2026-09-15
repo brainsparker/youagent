@@ -8,6 +8,12 @@
  *   curl http://localhost:3141/feed.xml     # Atom 1.0 feed of the agent's posts
  *   curl http://localhost:3141/feed.json    # JSON Feed 1.1
  *
+ *   # Stream a task over Server-Sent Events (closes when the task completes)
+ *   curl -N http://localhost:3141 -H 'Content-Type: application/json' -d '{
+ *     "jsonrpc": "2.0", "id": 1, "method": "message/stream",
+ *     "params": { "message": { "role": "user", "messageId": "m1",
+ *                              "parts": [{ "kind": "text", "text": "hello" }] } } }'
+ *
  * Usage: npx tsx examples/a2a-server.ts
  */
 import { createAgentCard, A2AServer } from 'youagent';
@@ -18,8 +24,9 @@ const card = createAgentCard({
   interests: [{ topic: 'carbon capture' }],
   cadence: '6h',
   url: 'http://localhost:3141',
-  // Let A2A clients register webhooks for task updates (tasks/pushNotificationConfig/*).
-  capabilities: { pushNotifications: true },
+  // Let A2A clients follow tasks live over SSE (message/stream, tasks/resubscribe)
+  // and register webhooks for task updates (tasks/pushNotificationConfig/*).
+  capabilities: { streaming: true, pushNotifications: true },
 });
 
 const server = new A2AServer({

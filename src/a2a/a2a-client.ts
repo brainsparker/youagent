@@ -6,12 +6,13 @@ import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
 import { isYouAgent, getAgentIdentifier } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
-import { normalizeTask } from './compat.js';
+import { normalizeStreamEvent, normalizeTask } from './compat.js';
 import { fetchAgentCard } from './discovery.js';
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
   Message,
+  StreamEvent,
   Task,
   Part,
   TextPart,
@@ -34,6 +35,14 @@ import type {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** Options for the streaming client methods. */
+export interface StreamOptions {
+  /** Abort to stop consuming the stream early; the connection is closed. */
+  signal?: AbortSignal;
+  /** Continue an existing task (message/stream only). */
+  taskId?: string;
+}
+
 /** JSON-RPC 2.0 client for the A2A protocol. */
 export class A2AClient {
   constructor(private senderCard: AgentCard) {}
@@ -51,6 +60,44 @@ export class A2AClient {
     }
 
     return normalizeTask(response.result);
+  }
+
+  /**
+   * Send a message over message/stream and iterate the Server-Sent Events
+   * the agent emits: the opening Task (or a single direct Message), then
+   * status and artifact updates until the task reaches a terminal state and
+   * the agent closes the stream. Events are normalized to the 0.3 shapes
+   * (`kind: 'task' | 'message' | 'status-update' | 'artifact-update'`)
+   * whether the agent speaks 0.3 or wraps them in a 1.0 StreamResponse.
+   *
+   * Throws when the agent answers with a JSON-RPC error, including
+   * UnsupportedOperationError from agents whose card declares
+   * `capabilities.streaming: false`; check the card first when in doubt.
+   */
+  async *sendMessageStream(
+    agentUrl: string,
+    parts: Part[],
+    contextId?: string,
+    options: StreamOptions = {},
+  ): AsyncGenerator<StreamEvent, void, undefined> {
+    const message = this.buildMessage(parts, contextId);
+    if (options.taskId) message.taskId = options.taskId;
+    const params: MessageSendParams = { message };
+    yield* this.stream(agentUrl, 'message/stream', params, options.signal);
+  }
+
+  /**
+   * Reattach to a running task's stream (tasks/resubscribe). The agent replays
+   * the current Task snapshot and then streams updates until the task ends.
+   * Terminal tasks are refused by the agent with UnsupportedOperationError.
+   */
+  async *resubscribe(
+    agentUrl: string,
+    taskId: string,
+    options: StreamOptions = {},
+  ): AsyncGenerator<StreamEvent, void, undefined> {
+    const params: TaskIdParams = { id: taskId };
+    yield* this.stream(agentUrl, 'tasks/resubscribe', params, options.signal);
   }
 
   /** Get a task by ID from a remote agent. */
@@ -220,6 +267,63 @@ export class A2AClient {
     return response.result as T;
   }
 
+  /**
+   * POST a JSON-RPC request and iterate the SSE frames of the response. A
+   * non-SSE response is read as a single JSON-RPC reply (an error, or an
+   * agent that answered a stream request unary).
+   */
+  private async *stream(
+    agentUrl: string,
+    method: string,
+    params: unknown,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent, void, undefined> {
+    const request = this.buildJsonRpc(method, params);
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    // The connection must open within the timeout; the stream itself may run as long as the task.
+    const connectTimer = setTimeout(abort, DEFAULT_TIMEOUT_MS);
+
+    let res: Response;
+    try {
+      res = await fetch(agentUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' },
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(connectTimer);
+    }
+
+    try {
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.startsWith('text/event-stream')) {
+        const response = (await res.json()) as JsonRpcResponse;
+        if (response.error) throw new Error(`${method} failed: ${response.error.message}`);
+        yield normalizeStreamEvent(response.result);
+        return;
+      }
+      if (!res.body) throw new Error(`${method} failed: empty response body`);
+
+      for await (const data of readSseData(res.body)) {
+        const response = JSON.parse(data) as JsonRpcResponse;
+        if (response.error) throw new Error(`${method} failed: ${response.error.message}`);
+        yield normalizeStreamEvent(response.result);
+      }
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      // Consumer stopped early (break/return): close the connection.
+      controller.abort();
+    }
+  }
+
   private async rpc(agentUrl: string, method: string, params: unknown): Promise<JsonRpcResponse> {
     const request = this.buildJsonRpc(method, params);
     let lastError: unknown;
@@ -275,5 +379,58 @@ export class A2AClient {
       method,
       params,
     };
+  }
+}
+
+/**
+ * Iterate the `data` payloads of a Server-Sent Events byte stream. Frames are
+ * separated by a blank line; multi-line `data:` fields are joined with `\n`
+ * and comment lines (starting with `:`) are ignored, per the WHATWG
+ * EventSource parsing rules. `event`, `id` and `retry` fields are skipped
+ * because A2A carries everything in `data`.
+ */
+export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string, void, undefined> {
+  const decoder = new TextDecoder();
+  const reader = body.getReader();
+  let buffer = '';
+  let dataLines: string[] = [];
+
+  const flush = (): string | undefined => {
+    if (dataLines.length === 0) return undefined;
+    const data = dataLines.join('\n');
+    dataLines = [];
+    return data;
+  };
+
+  const consumeLine = (line: string): string | undefined => {
+    if (line === '') return flush();
+    if (line.startsWith(':')) return undefined;
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    if (value.startsWith(' ')) value = value.slice(1);
+    if (field === 'data') dataLines.push(value);
+    return undefined;
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let newline: number;
+      while ((newline = buffer.search(/\r\n|\n|\r/)) !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + (buffer[newline] === '\r' && buffer[newline + 1] === '\n' ? 2 : 1));
+        const data = consumeLine(line);
+        if (data !== undefined) yield data;
+      }
+      if (done) break;
+    }
+    // A final frame without a trailing blank line still counts.
+    if (buffer !== '') consumeLine(buffer);
+    const tail = flush();
+    if (tail !== undefined) yield tail;
+  } finally {
+    reader.releaseLock();
   }
 }

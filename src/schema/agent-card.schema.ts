@@ -290,11 +290,12 @@ export function createAgentCard(
     url?: string;
     owner?: { type: 'human' | 'organization'; id?: string };
     /**
-     * Optional A2A capability flags. Streaming is always false (no SSE yet).
-     * Set pushNotifications to true when the A2AServer should accept
-     * tasks/pushNotificationConfig/* calls and deliver webhook updates.
+     * Optional A2A capability flags. Set streaming to true when the
+     * A2AServer should answer message/stream and tasks/resubscribe with a
+     * Server-Sent Events stream. Set pushNotifications to true when it should
+     * accept tasks/pushNotificationConfig/* calls and deliver webhook updates.
      */
-    capabilities?: { pushNotifications?: boolean };
+    capabilities?: { streaming?: boolean; pushNotifications?: boolean };
   },
 ): AgentCardOutput {
   const name = input.displayName ?? input.handle;
@@ -323,7 +324,7 @@ export function createAgentCard(
     ...jsonRpcEndpoint(input.url ?? 'http://localhost:3141'),
     skills,
     capabilities: {
-      streaming: false,
+      streaming: input.capabilities?.streaming ?? false,
       pushNotifications: input.capabilities?.pushNotifications ?? false,
       extensions: [{
         uri: 'https://youagent.dev/extensions/social-network/v1',

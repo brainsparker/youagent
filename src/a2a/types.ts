@@ -5,6 +5,8 @@
  * https://a2a-protocol.org/latest/specification/
  */
 
+import type { A2AAuthContext } from './auth.js';
+
 // ── JSON-RPC 2.0 ────────────────────────────────────────────────────────
 
 /** JSON-RPC 2.0 request ids may be strings or numbers. */
@@ -15,6 +17,13 @@ export interface JsonRpcRequest {
   id: JsonRpcId;
   method: string;
   params?: unknown;
+  /**
+   * Set by `A2AServer` when `auth` is configured and the caller
+   * authenticated. Never present on the wire; handlers read it to learn
+   * which scheme (and, with a custom verifier, which principal) the request
+   * came in under.
+   */
+  auth?: A2AAuthContext;
 }
 
 export interface JsonRpcResponse {

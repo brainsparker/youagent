@@ -34,9 +34,64 @@ import type {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** Credentials the client presents to a remote agent. */
+export interface A2AClientCredentials {
+  /** Sent as `Authorization: Bearer <token>`. */
+  bearerToken?: string;
+  /** Sent in `apiKeyHeader` (default `X-API-Key`). */
+  apiKey?: string;
+  /** Header for `apiKey`. Defaults to `X-API-Key`. */
+  apiKeyHeader?: string;
+  /** Extra headers, for schemes the two fields above do not cover. */
+  headers?: Record<string, string>;
+}
+
+/** Options for `A2AClient`. */
+export interface A2AClientOptions {
+  /** Credentials sent to every agent this client talks to. */
+  credentials?: A2AClientCredentials;
+  /**
+   * Per-agent credentials, looked up by the exact `agentUrl` passed to a
+   * call. Takes precedence over `credentials` when it returns a value.
+   */
+  credentialsFor?: (agentUrl: string) => A2AClientCredentials | undefined;
+  /** fetch implementation override (tests, custom agents). */
+  fetch?: typeof fetch;
+}
+
+/**
+ * Thrown when a remote agent answers a JSON-RPC call with HTTP 401 or 403:
+ * the agent requires authentication this client did not (or could not)
+ * satisfy. `challenge` carries the server's `WWW-Authenticate` header, which
+ * names the schemes it accepts; the agent card's `securitySchemes` has the
+ * details.
+ */
+export class A2AAuthenticationError extends Error {
+  readonly name = 'A2AAuthenticationError';
+  constructor(
+    readonly agentUrl: string,
+    readonly status: number,
+    readonly challenge: string | undefined,
+    body: string,
+  ) {
+    super(
+      `${agentUrl} answered HTTP ${status}: ${
+        status === 401 ? 'authentication required' : 'not authorized'
+      }${challenge ? ` (WWW-Authenticate: ${challenge})` : ''}${body ? ` ${body}` : ''}`,
+    );
+  }
+}
+
 /** JSON-RPC 2.0 client for the A2A protocol. */
 export class A2AClient {
-  constructor(private senderCard: AgentCard) {}
+  private readonly options: A2AClientOptions;
+
+  constructor(
+    private senderCard: AgentCard,
+    options: A2AClientOptions = {},
+  ) {
+    this.options = options;
+  }
 
   // ── A2A standard methods ──────────────────────────────────────────────
 
@@ -220,8 +275,20 @@ export class A2AClient {
     return response.result as T;
   }
 
+  /** Headers for a call to `agentUrl`: content type plus any configured credentials. */
+  private requestHeaders(agentUrl: string): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const creds = this.options.credentialsFor?.(agentUrl) ?? this.options.credentials;
+    if (!creds) return headers;
+    if (creds.headers) Object.assign(headers, creds.headers);
+    if (creds.apiKey) headers[creds.apiKeyHeader ?? 'X-API-Key'] = creds.apiKey;
+    if (creds.bearerToken) headers['Authorization'] = `Bearer ${creds.bearerToken}`;
+    return headers;
+  }
+
   private async rpc(agentUrl: string, method: string, params: unknown): Promise<JsonRpcResponse> {
     const request = this.buildJsonRpc(method, params);
+    const fetchImpl = this.options.fetch ?? globalThis.fetch;
     let lastError: unknown;
 
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -230,12 +297,24 @@ export class A2AClient {
         const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
         try {
-          const res = await fetch(agentUrl, {
+          const res = await fetchImpl(agentUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.requestHeaders(agentUrl),
             body: JSON.stringify(request),
             signal: controller.signal,
           });
+
+          if (res.status === 401 || res.status === 403) {
+            // Retrying with the same credentials cannot succeed; surface
+            // the challenge so the caller can pick up the right ones.
+            const text = await res.text().catch(() => '');
+            throw new A2AAuthenticationError(
+              agentUrl,
+              res.status,
+              res.headers.get('www-authenticate') ?? undefined,
+              text,
+            );
+          }
 
           if (!res.ok) {
             const text = await res.text().catch(() => '');
@@ -247,6 +326,7 @@ export class A2AClient {
           clearTimeout(timer);
         }
       } catch (err) {
+        if (err instanceof A2AAuthenticationError) throw err;
         lastError = err;
       }
     }

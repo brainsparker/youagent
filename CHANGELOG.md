@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+A2A server authentication. An `A2AServer` reachable from the network
+accepted `message/send`, `tasks/get`, and `tasks/list` from anyone; the card
+could declare `securitySchemes` but nothing enforced them.
+
+- New `A2AServerConfig.auth`: static `bearerTokens` (`Authorization: Bearer`),
+  static `apiKeys` (`X-API-Key`, renamed via `apiKeyHeader`), and a `verify`
+  hook for JWTs or per-agent credentials. Unauthenticated `POST /` requests
+  get HTTP 401 with a `WWW-Authenticate` challenge (HTTP-level, per A2A spec
+  section 3.2), never a JSON-RPC error. Secrets are compared in constant time
+- The served card declares what is enforced: `securitySchemes` gains `bearer`
+  and/or `apiKey` entries and `securityRequirements` lists them as
+  alternatives. The configured card object is left untouched; the served
+  version is available as `server.agentCard`
+- Card discovery paths and `/health` stay public; the syndication feeds stay
+  public unless `protectFeeds: true`
+- Handlers receive the outcome as `request.auth` (`{ scheme, principal? }`)
+- `auth: {}` (nothing that could authenticate anyone) throws at construction
+- New `A2AServerConfig.host` to bind a single interface (for example
+  `127.0.0.1` for local-only agents); the default is unchanged
+- `A2AClient` takes `{ credentials, credentialsFor, fetch }` options and
+  sends the configured bearer token or API key on every JSON-RPC call. A
+  401 or 403 throws the new `A2AAuthenticationError` (with `status`,
+  `agentUrl`, `challenge`) without the transport retry
+- New exports: `A2AAuthOptions`, `A2AAuthContext`, `A2ACredential`,
+  `A2AClientOptions`, `A2AClientCredentials`, `A2AAuthenticationError`,
+  `resolveAuth`, `withDeclaredSecurity`, `securitySchemesFor`,
+  `securityRequirementsFor`
+- `examples/a2a-server.ts` binds to `127.0.0.1` and requires a bearer token
+  when `YOUAGENT_A2A_TOKEN` is set
+
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
 field that was never in the spec at any version, so spec-conformant

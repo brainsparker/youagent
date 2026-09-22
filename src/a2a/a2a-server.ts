@@ -7,7 +7,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createHash } from 'node:crypto';
+import { createHash, type JsonWebKey } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
@@ -20,6 +20,14 @@ import {
 } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import { normalizeMessage } from './compat.js';
+import {
+  A2A_JWKS_PATH,
+  signAgentCard,
+  toPublicJwk,
+  type CardSigningAlgorithm,
+  type JsonWebKeySet,
+  type PrivateKeyInput,
+} from './card-signing.js';
 import {
   ATOM_CONTENT_TYPE,
   DEFAULT_FEED_LIMIT,
@@ -105,6 +113,32 @@ export interface PushNotificationOptions {
   fetch?: typeof fetch;
 }
 
+/**
+ * Agent card signing (A2A spec section 8.4). When configured, the server
+ * signs the card once at construction and serves the signed card on every
+ * discovery path, and publishes the public key at /.well-known/jwks.json so
+ * clients can resolve the signature's `jku` without out-of-band key exchange.
+ */
+export interface A2ACardSigningConfig {
+  /** Private signing key: KeyObject, PEM string or buffer, or a private JWK. */
+  key: PrivateKeyInput;
+  /** Key identifier written to the signature and to the published JWK. */
+  kid: string;
+  /** JWS algorithm. Defaults to the key's natural algorithm (ES256 for P-256, EdDSA for Ed25519, RS256 for RSA). */
+  alg?: CardSigningAlgorithm;
+  /**
+   * JWKS URL written to the signature's `jku`. Defaults to
+   * `<origin of the card's primary interface>/.well-known/jwks.json`, which
+   * is where this server publishes the key. Pass `false` to omit `jku`.
+   */
+  jku?: string | false;
+  /**
+   * Previously used public keys to keep publishing in the JWK Set during a
+   * rotation, so cards signed with the old key still verify.
+   */
+  additionalJwks?: JsonWebKey[];
+}
+
 /** Configuration for the A2A server. */
 export interface A2AServerConfig {
   /** Port to listen on. Defaults to 3141. Pass 0 to pick a free port. */
@@ -124,6 +158,12 @@ export interface A2AServerConfig {
   cardMaxAgeSeconds?: number;
   /** Webhook delivery settings for tasks/pushNotificationConfig. */
   pushNotifications?: PushNotificationOptions;
+  /**
+   * Sign the served card and publish the public key at /.well-known/jwks.json.
+   * Leave unset to serve the card exactly as given (any `signatures` already
+   * on it are served as-is).
+   */
+  signing?: A2ACardSigningConfig;
 }
 
 const DEFAULT_PORT = 3141;
@@ -174,13 +214,50 @@ export class A2AServer {
   private readonly port: number;
   private readonly cardMaxAgeSeconds: number;
   private readonly pushOptions: PushNotificationOptions;
+  /** The card actually served: the configured card, signed when `signing` is set. */
+  private readonly servedCard: AgentCard;
+  /** JWK Set served at /.well-known/jwks.json, or null when signing is off. */
+  private readonly jwks: JsonWebKeySet | null;
 
   constructor(private config: A2AServerConfig) {
     this.port = config.port ?? DEFAULT_PORT;
     this.cardMaxAgeSeconds = Math.max(0, Math.floor(config.cardMaxAgeSeconds ?? DEFAULT_CARD_MAX_AGE_SECONDS));
     this.pushOptions = config.pushNotifications ?? {};
+
+    if (config.signing) {
+      const { key, kid, alg, additionalJwks } = config.signing;
+      const jku = config.signing.jku === false ? undefined : (config.signing.jku ?? this.defaultJwksUrl());
+      this.servedCard = signAgentCard(config.agentCard, { key, kid, alg, jku });
+      this.jwks = { keys: [toPublicJwk(key, { kid, alg }), ...(additionalJwks ?? [])] };
+    } else {
+      this.servedCard = config.agentCard;
+      this.jwks = null;
+    }
+
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.registerTaskHandlers();
+  }
+
+  /** The agent card as served to clients (signed when signing is configured). */
+  get agentCard(): AgentCard {
+    return this.servedCard;
+  }
+
+  /** The JWK Set published at /.well-known/jwks.json, or null when the card is not signed. */
+  get jwkSet(): JsonWebKeySet | null {
+    return this.jwks;
+  }
+
+  /** `<origin of the card's primary interface>/.well-known/jwks.json`. */
+  private defaultJwksUrl(): string {
+    const cardUrl = getAgentUrl(this.config.agentCard);
+    try {
+      return `${new URL(cardUrl).origin}${A2A_JWKS_PATH}`;
+    } catch {
+      throw new Error(
+        `Cannot derive a JWKS URL from the agent card url "${cardUrl}"; pass signing.jku explicitly (or false to omit it)`,
+      );
+    }
   }
 
   /** Register a handler for an A2A method (e.g., 'message/send'). Overrides defaults. */
@@ -693,6 +770,18 @@ export class A2AServer {
       return;
     }
 
+    // GET /.well-known/jwks.json: public keys the served card is signed with
+    if ((method === 'GET' || method === 'HEAD') && pathname === A2A_JWKS_PATH && this.jwks) {
+      const body = JSON.stringify(this.jwks);
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'Cache-Control': `public, max-age=${this.cardMaxAgeSeconds}`,
+      });
+      res.end(method === 'HEAD' ? undefined : body);
+      return;
+    }
+
     // GET /feed.xml and /feed.json (syndication, only when a feed is configured)
     if (
       method === 'GET' &&
@@ -778,7 +867,7 @@ export class A2AServer {
    * paths keep `application/json` for clients that predate the media type.
    */
   private sendAgentCard(req: IncomingMessage, res: ServerResponse, v1Path: boolean): void {
-    const body = JSON.stringify(this.config.agentCard);
+    const body = JSON.stringify(this.servedCard);
     const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 32)}"`;
     const headers: Record<string, string> = {
       'Content-Type': v1Path ? A2A_CARD_MEDIA_TYPE : 'application/json',

@@ -7,7 +7,7 @@ import type { AgentCard } from '../types/agent-card.js';
 import { isYouAgent, getAgentIdentifier } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import { normalizeTask } from './compat.js';
-import { fetchAgentCard } from './discovery.js';
+import { fetchAgentCard, type DiscoverySignatureOptions } from './discovery.js';
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -121,10 +121,15 @@ export class A2AClient {
    * and falls back to the pre-1.0 path (`/.well-known/agent.json`). The
    * returned card is normalized to the v1.0 structure.
    *
+   * Pass `signature` to verify the card's A2A signatures (spec section 8.4)
+   * before trusting it; by default the JWKS is only followed on the origin
+   * the card came from.
+   *
    * @throws AgentCardDiscoveryError when neither path serves a card.
+   * @throws AgentCardSignatureError when `signature` is set and verification fails.
    */
-  async discover(agentUrl: string): Promise<AgentCard> {
-    return fetchAgentCard(agentUrl, { timeoutMs: DEFAULT_TIMEOUT_MS });
+  async discover(agentUrl: string, options: { signature?: DiscoverySignatureOptions } = {}): Promise<AgentCard> {
+    return fetchAgentCard(agentUrl, { timeoutMs: DEFAULT_TIMEOUT_MS, signature: options.signature });
   }
 
   /** Ping a remote agent. */

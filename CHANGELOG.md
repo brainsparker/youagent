@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+Signed agent cards (A2A v1.0 specification section 8.4). Cards can now be
+signed with a detached JWS over their RFC 8785 canonical form, served
+signed, and verified on discovery. Until now `signatures` were accepted on
+cards but never produced or checked.
+
+- New `src/a2a/card-signing.ts`: `signAgentCard`, `verifyAgentCardSignatures`,
+  `agentCardSigningPayload` (RFC 8785 canonicalization matching the
+  a2a-python reference SDK: `signatures` excluded, empty values dropped),
+  `generateCardSigningKeyPair`, `toPublicJwk`, `fetchJwks`, `jkuAllowed`,
+  `decodeProtectedHeader`, `AgentCardSignatureError`. Algorithms: ES256,
+  ES384, ES512, EdDSA (Ed25519), RS256, PS256, all on `node:crypto`, no new
+  dependencies. Verification enforces that the key type matches `alg`
+  (no algorithm confusion) and never accepts symmetric algorithms
+- `A2AServer` gains a `signing` option (`key`, `kid`, optional `alg`, `jku`,
+  `additionalJwks`): the card is signed once at construction and served
+  signed on every discovery path, and the public key is published at
+  `GET /.well-known/jwks.json` (new `A2A_JWKS_PATH`). The signature's `jku`
+  defaults to that URL on the card's own origin. New `server.agentCard` and
+  `server.jwkSet` getters
+- `fetchAgentCard` and `A2AClient.discover` gain a `signature` option that
+  verifies the fetched card; by default the `jku` is only followed on the
+  origin the card was fetched from, so a registry or mirror cannot substitute
+  its own key. New `fetchVerifiedAgentCard` returns the card together with
+  which signature verified
+- New CLI command `youagent verify <agent-url>`: fetches a card, verifies it
+  (`--key` for pinned PEM/JWK/JWKS files, `--any-jku`, `--allow-unsigned`,
+  `--json`) and exits non-zero on failure, usable as a conformance check
+
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
 field that was never in the spec at any version, so spec-conformant

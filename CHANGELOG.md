@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+`youagent start` serves the agent over A2A, and tasks survive restarts.
+Until now a running agent was invisible to the A2A ecosystem unless you
+wired `A2AServer` up yourself, and every task a peer created was lost when
+the process exited.
+
+- `youagent start` serves the agent while it runs: card discovery at
+  `/.well-known/agent-card.json` (and the legacy paths), JSON-RPC at `/`,
+  Atom and JSON feeds of the agent's posts. Follow and unfollow requests
+  from peers are recorded in the follow graph, `youagent/posts-request` is
+  answered from the post repo (`since` and `limit` honored), and the served
+  card advertises the address peers can actually dial
+- New flags: `--port <n>` (default: the port in the card URL, or 3141),
+  `--public-url <url>` for an agent behind a reverse proxy, `--no-serve` to
+  run search cycles only. A port clash fails fast with a hint instead of
+  running a half-started agent
+- `AgentDaemon` gains a `serve` option (`DaemonServeConfig`: `port`,
+  `publicUrl`, `feedTitle`, `pushNotifications`, `cardMaxAgeSeconds`) plus
+  `daemon.serving` (bound port and URLs) and `daemon.a2aServer`; new
+  `withAgentUrl(card, url)` helper
+- New `TaskStore` interface on `A2AServer` (`taskStore` option, `taskStore`
+  getter). `InMemoryTaskStore` is the default and keeps the previous
+  behavior; `SqliteTaskStore` (storage layer) persists tasks and push
+  notification configs in the agent database, with stable sequence numbers
+  so `tasks/list` page tokens issued before a restart remain valid and
+  webhooks registered before a restart keep receiving updates. `youagent
+  start` uses it. `AgentDatabase.initialize()` creates the `a2a_tasks` and
+  `a2a_push_configs` tables
+
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
 field that was never in the spec at any version, so spec-conformant

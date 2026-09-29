@@ -20,6 +20,7 @@ import {
 } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import { normalizeMessage } from './compat.js';
+import { InMemoryTaskStore, type TaskStore } from './task-store.js';
 import {
   ATOM_CONTENT_TYPE,
   DEFAULT_FEED_LIMIT,
@@ -124,6 +125,13 @@ export interface A2AServerConfig {
   cardMaxAgeSeconds?: number;
   /** Webhook delivery settings for tasks/pushNotificationConfig. */
   pushNotifications?: PushNotificationOptions;
+  /**
+   * Where tasks and push notification configs are kept. Defaults to an
+   * `InMemoryTaskStore`, which forgets everything when the process exits.
+   * Pass a `SqliteTaskStore` (storage layer) to survive restarts; `youagent
+   * start` does this with the agent's own database.
+   */
+  taskStore?: TaskStore;
 }
 
 const DEFAULT_PORT = 3141;
@@ -164,12 +172,8 @@ export function rpcError(code: number, message: string, data?: unknown): JsonRpc
 export class A2AServer {
   private server: ReturnType<typeof createServer>;
   private handlers = new Map<string, A2AMethodHandler>();
-  private tasks = new Map<string, Task>();
-  /** Monotonic creation sequence per task id, used for cursor pagination. */
-  private taskSeq = new Map<string, number>();
-  private nextSeq = 1;
-  /** taskId -> configId -> config */
-  private pushConfigs = new Map<string, Map<string, PushNotificationConfig>>();
+  /** Tasks and push notification configs; in memory unless the embedder says otherwise. */
+  private readonly store: TaskStore;
   private pendingDeliveries = new Set<Promise<void>>();
   private readonly port: number;
   private readonly cardMaxAgeSeconds: number;
@@ -179,6 +183,7 @@ export class A2AServer {
     this.port = config.port ?? DEFAULT_PORT;
     this.cardMaxAgeSeconds = Math.max(0, Math.floor(config.cardMaxAgeSeconds ?? DEFAULT_CARD_MAX_AGE_SECONDS));
     this.pushOptions = config.pushNotifications ?? {};
+    this.store = config.taskStore ?? new InMemoryTaskStore();
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.registerTaskHandlers();
   }
@@ -286,13 +291,8 @@ export class A2AServer {
       const { taskId, config } = this.parseSetPushParams(params);
       this.requireTask(taskId);
       this.validateWebhookUrl(config.url);
-      const stored: PushNotificationConfig = { ...config, id: config.id ?? uuidv4() };
-      let byId = this.pushConfigs.get(taskId);
-      if (!byId) {
-        byId = new Map();
-        this.pushConfigs.set(taskId, byId);
-      }
-      byId.set(stored.id as string, stored);
+      const stored = { ...config, id: config.id ?? uuidv4() };
+      this.store.savePushConfig(taskId, stored);
       return this.shapePushConfig({ taskId, pushNotificationConfig: stored }, request.method);
     });
 
@@ -300,8 +300,8 @@ export class A2AServer {
       this.assertPushSupported();
       const { taskId, configId } = this.parsePushRefParams(params, false);
       this.requireTask(taskId);
-      const byId = this.pushConfigs.get(taskId);
-      const config = configId ? byId?.get(configId) : byId?.values().next().value;
+      const configs = this.store.getPushConfigs(taskId);
+      const config = configId ? configs.find((c) => c.id === configId) : configs[0];
       if (!config) {
         throw rpcError(TASK_NOT_FOUND, `Push notification config not found for task ${taskId}`);
       }
@@ -312,9 +312,9 @@ export class A2AServer {
       this.assertPushSupported();
       const { taskId } = this.parsePushRefParams(params, false);
       this.requireTask(taskId);
-      const configs = [...(this.pushConfigs.get(taskId)?.values() ?? [])].map((c) =>
-        this.shapePushConfig({ taskId, pushNotificationConfig: c }, request.method),
-      );
+      const configs = this.store
+        .getPushConfigs(taskId)
+        .map((c) => this.shapePushConfig({ taskId, pushNotificationConfig: c }, request.method));
       // 1.0 wraps the list; 0.3 returns the bare array.
       return isV1Method(request.method) ? { configs, nextPageToken: '' } : configs;
     });
@@ -323,12 +323,8 @@ export class A2AServer {
       this.assertPushSupported();
       const { taskId, configId } = this.parsePushRefParams(params, true);
       this.requireTask(taskId);
-      const byId = this.pushConfigs.get(taskId);
-      if (!byId?.delete(configId as string)) {
+      if (!this.store.deletePushConfig(taskId, configId as string)) {
         throw rpcError(TASK_NOT_FOUND, `Push notification config ${configId} not found for task ${taskId}`);
-      }
-      if (byId.size === 0) {
-        this.pushConfigs.delete(taskId);
       }
       return isV1Method(request.method) ? {} : null;
     });
@@ -374,9 +370,14 @@ export class A2AServer {
 
   // ── Task store (public for embedders) ─────────────────────────────────
 
+  /** The store this server reads and writes tasks through. */
+  get taskStore(): TaskStore {
+    return this.store;
+  }
+
   /** Look up a task by id, or undefined. */
   getTask(taskId: string): Task | undefined {
-    return this.tasks.get(taskId);
+    return this.store.getTask(taskId);
   }
 
   /**
@@ -389,24 +390,18 @@ export class A2AServer {
     const historyLength = this.parseHistoryLength(params.historyLength);
     const status = params.status === undefined ? undefined : normalizeTaskState(params.status);
 
-    const matching = [...this.tasks.values()]
-      .filter((t) => params.contextId === undefined || t.contextId === params.contextId)
-      .filter((t) => status === undefined || t.status.state === status)
-      .sort((a, b) => (this.taskSeq.get(b.id) ?? 0) - (this.taskSeq.get(a.id) ?? 0));
-
-    const remaining =
-      afterSeq === undefined ? matching : matching.filter((t) => (this.taskSeq.get(t.id) ?? 0) < afterSeq);
-    const page = remaining.slice(0, pageSize);
-    const hasMore = remaining.length > page.length;
-    const last = page[page.length - 1];
-    const nextPageToken =
-      hasMore && last ? encodePageToken(this.taskSeq.get(last.id) ?? 0) : '';
+    const { records, hasMore, total } = this.store.listTasks(
+      { contextId: params.contextId, status },
+      { afterSeq, limit: pageSize },
+    );
+    const last = records[records.length - 1];
+    const nextPageToken = hasMore && last ? encodePageToken(last.seq) : '';
 
     return {
-      tasks: page.map((t) => applyHistoryLength(t, historyLength)),
+      tasks: records.map((r) => applyHistoryLength(r.task, historyLength)),
       nextPageToken,
       pageSize,
-      totalSize: matching.length,
+      totalSize: total,
     };
   }
 
@@ -423,6 +418,7 @@ export class A2AServer {
       task.history = [...(task.history ?? []), message];
     }
     task.status = status;
+    this.store.saveTask(task);
     this.notifyPushSubscribers(task);
     return task;
   }
@@ -456,7 +452,7 @@ export class A2AServer {
       timestamp: new Date().toISOString(),
     };
 
-    const existing = this.tasks.get(taskId);
+    const existing = this.store.getTask(taskId);
     const history = existing?.history ? [...existing.history, incomingMessage] : [incomingMessage];
     if (responseMessage) {
       history.push(responseMessage);
@@ -471,10 +467,7 @@ export class A2AServer {
       artifacts: artifacts ?? existing?.artifacts,
     };
 
-    this.tasks.set(taskId, task);
-    if (!this.taskSeq.has(taskId)) {
-      this.taskSeq.set(taskId, this.nextSeq++);
-    }
+    this.store.saveTask(task);
     this.notifyPushSubscribers(task);
     return task;
   }
@@ -482,7 +475,7 @@ export class A2AServer {
   /** A follow-up message must target an existing, non-terminal task. */
   private assertTaskAcceptsMessages(message: Message): void {
     if (!message.taskId) return;
-    const task = this.tasks.get(message.taskId);
+    const task = this.store.getTask(message.taskId);
     if (!task) {
       throw rpcError(TASK_NOT_FOUND, `Task not found: ${message.taskId}`);
     }
@@ -498,7 +491,7 @@ export class A2AServer {
     if (typeof taskId !== 'string' || taskId.length === 0) {
       throw rpcError(INVALID_PARAMS, 'Task id must be a non-empty string');
     }
-    const task = this.tasks.get(taskId);
+    const task = this.store.getTask(taskId);
     if (!task) {
       throw rpcError(TASK_NOT_FOUND, `Task not found: ${taskId}`);
     }
@@ -639,13 +632,14 @@ export class A2AServer {
 
   /** POST the task to every webhook registered for it. Best-effort, never throws. */
   private notifyPushSubscribers(task: Task): void {
-    const byId = this.pushConfigs.get(task.id);
-    if (!byId || byId.size === 0 || !this.pushNotificationsEnabled) return;
+    if (!this.pushNotificationsEnabled) return;
+    const configs = this.store.getPushConfigs(task.id);
+    if (configs.length === 0) return;
     const fetchImpl = this.pushOptions.fetch ?? globalThis.fetch;
     const timeoutMs = this.pushOptions.timeoutMs ?? DEFAULT_PUSH_TIMEOUT_MS;
     const body = JSON.stringify(task);
 
-    for (const config of byId.values()) {
+    for (const config of configs) {
       const entry: TaskPushNotificationConfig = { taskId: task.id, pushNotificationConfig: config };
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (config.token) headers['X-A2A-Notification-Token'] = config.token;

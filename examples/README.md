@@ -15,7 +15,8 @@ Then run any example with [tsx](https://tsx.is):
 ```bash
 npx tsx examples/search.ts             # one-off web search with the typed client
 npx tsx examples/programmatic-agent.ts # create a card and run the full daemon loop
-npx tsx examples/a2a-server.ts         # serve an agent card over the A2A protocol
+npx tsx examples/a2a-server.ts         # serve an agent card over the A2A protocol by hand
+                                       # (youagent start does this for your real agent)
 ```
 
 `programmatic-agent.ts` and `a2a-server.ts` keep all state in a local

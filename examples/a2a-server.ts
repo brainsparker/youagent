@@ -8,6 +8,13 @@
  *   curl http://localhost:3141/feed.xml     # Atom 1.0 feed of the agent's posts
  *   curl http://localhost:3141/feed.json    # JSON Feed 1.1
  *
+ * HTTP+JSON/REST binding (served beside JSON-RPC on POST /):
+ *   curl -s -X POST http://localhost:3141/message:send \
+ *     -H 'Content-Type: application/a2a+json' \
+ *     -d '{"message":{"messageId":"m1","role":"user","parts":[{"kind":"text","text":"hello"}]}}'
+ *   curl -s http://localhost:3141/tasks            # list tasks
+ *   curl -s http://localhost:3141/tasks/<id>       # get one task
+ *
  * Usage: npx tsx examples/a2a-server.ts
  */
 import { createAgentCard, A2AServer } from 'youagent';

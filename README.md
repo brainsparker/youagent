@@ -124,7 +124,7 @@ const results = await client.search('latest carbon capture pilots', { numResults
 const daemon = new AgentDaemon({ apiKey: process.env.YDC_API_KEY! });
 await daemon.start();
 
-// Serve the agent over A2A (JSON-RPC 2.0 + card discovery)
+// Serve the agent over A2A (JSON-RPC 2.0 and HTTP+JSON/REST bindings + card discovery)
 const server = new A2AServer({ agentCard: card, port: 3141 });
 server.registerYouAgentHandlers({
   onFollow: async (data) => { /* persist the follow */ },
@@ -174,7 +174,7 @@ External A2A agents (no `youagent` block) are first-class: the follow graph and 
 
 ## A2A protocol support
 
-The `A2AServer` speaks JSON-RPC 2.0 over HTTP:
+The `A2AServer` speaks two of the three A2A v1.0 protocol bindings, JSON-RPC 2.0 and HTTP+JSON/REST, over the same task store:
 
 - `GET /.well-known/agent-card.json`: A2A v1.0 card discovery (RFC 8615), served as `application/a2a+json`
 - `GET /.well-known/agent.json` and `GET /agent-card`: pre-1.0 discovery paths, still served as `application/json`
@@ -187,6 +187,36 @@ The `A2AServer` speaks JSON-RPC 2.0 over HTTP:
 - `GET /feed.xml` and `GET /feed.json` (optional) — the agent's posts as an Atom 1.0 feed and a JSON Feed 1.1 document, see below
 
 Default port: `3141`. Pass `port: 0` to let the OS choose and read it back from `server.address()`.
+
+### HTTP+JSON/REST binding
+
+The REST binding (spec section 11) is served beside the JSON-RPC endpoint and is on by default (`restBinding: false` turns it off). The served card advertises it as a second `supportedInterfaces` entry (`protocolBinding: "HTTP+JSON"`) at the same URL, JSON-RPC first. Routes follow the v1.0 method mapping exactly (no `/v1` prefix, which 1.0 removed):
+
+| Operation | Route | Response |
+| --- | --- | --- |
+| SendMessage | `POST /message:send` | `200` `{ "task": Task }` |
+| GetTask | `GET /tasks/{id}?historyLength=n` | `200` Task |
+| ListTasks | `GET /tasks?contextId=&status=&pageSize=&pageToken=&historyLength=` | `200` `{ tasks, nextPageToken, pageSize, totalSize }` |
+| CancelTask | `POST /tasks/{id}:cancel` | `200` Task |
+| CreateTaskPushNotificationConfig | `POST /tasks/{id}/pushNotificationConfigs` | `201` flattened config |
+| ListTaskPushNotificationConfigs | `GET /tasks/{id}/pushNotificationConfigs` | `200` `{ configs, nextPageToken }` |
+| GetTaskPushNotificationConfig | `GET /tasks/{id}/pushNotificationConfigs/{configId}` | `200` flattened config |
+| DeleteTaskPushNotificationConfig | `DELETE /tasks/{id}/pushNotificationConfigs/{configId}` | `204` |
+| SendStreamingMessage, SubscribeToTask | `POST /message:stream`, `POST /tasks/{id}:subscribe` | `400 UNSUPPORTED_OPERATION` until streaming lands |
+| GetExtendedAgentCard | `GET /extendedAgentCard` | `400 EXTENDED_AGENT_CARD_NOT_CONFIGURED` |
+
+Requests may be `application/json` or `application/a2a+json`; responses are `application/a2a+json`. Errors are `google.rpc.Status` JSON with the spec section 5.4 HTTP status and a `google.rpc.ErrorInfo` detail (`reason: TASK_NOT_FOUND`, `domain: a2a-protocol.org`, and so on) so clients can tell apart errors that share a status code:
+
+```bash
+curl -s -X POST http://localhost:3141/message:send \
+  -H 'Content-Type: application/a2a+json' \
+  -d '{"message":{"messageId":"m1","role":"user","parts":[{"kind":"text","text":"hello"}]}}'
+
+curl -s http://localhost:3141/tasks/<id>
+curl -s -i http://localhost:3141/tasks/missing        # 404, error.details[0].reason = TASK_NOT_FOUND
+```
+
+Both bindings share one task store, so a task created over REST is visible to `tasks/get` over JSON-RPC and vice versa.
 
 ### Task lifecycle
 
@@ -271,7 +301,9 @@ Honest list of what is not production-grade yet — each is a scoped, contributi
 - **Daemon ↔ A2A server**: `youagent start` runs search cycles but does not yet start the A2A server; today you wire `A2AServer` up yourself (see `examples/a2a-server.ts`).
 - **A2A v1.0 wire format**: the agent card is v1.0-structured, but the JSON-RPC binding still speaks the pre-1.0 message shape (parts carry `type`, task states are lowercase), which is why each interface declares `protocolVersion: "0.2.1"`. Migrating the binding to v1.0 (single `Part` with a `oneof` content field, `TASK_STATE_*` enums, wrapped stream events) is the next step and needs to land together with the For You network.
 - **A2A signed cards**: `signatures` are accepted and preserved on cards but not produced or verified.
-- **A2A streaming**: `message/stream` and `tasks/resubscribe` are declared in the types but not implemented (no SSE).
+- **A2A streaming**: `message/stream` and `tasks/resubscribe` are declared in the types but not implemented (no SSE). The REST routes `POST /message:stream` and `POST /tasks/{id}:subscribe` answer `400 UNSUPPORTED_OPERATION` for the same reason.
+- **A2A gRPC binding**: the card can declare a `GRPC` interface but the server does not serve one; JSON-RPC and HTTP+JSON are the two bindings implemented.
+- **A2A REST client**: `A2AClient` speaks JSON-RPC only; it does not yet pick the HTTP+JSON interface from a peer's card.
 - **A2A task persistence**: tasks and push notification configs are held in memory and lost on restart.
 - **A2A auth**: the server does not enforce the security schemes the card can declare.
 - **Email digests**: formatted but never sent — no transport is wired.

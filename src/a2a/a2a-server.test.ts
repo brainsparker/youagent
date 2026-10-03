@@ -41,8 +41,10 @@ describe('A2AServer agent card discovery', () => {
 
     const body = await res.json();
     expect(body.name).toBe('Climate Watch');
+    // The server serves both bindings at the same URL, JSON-RPC preferred.
     expect(body.supportedInterfaces).toEqual([
       { url: 'https://climate.example.com/a2a', protocolBinding: 'JSONRPC', protocolVersion: '0.2.1' },
+      { url: 'https://climate.example.com/a2a', protocolBinding: 'HTTP+JSON', protocolVersion: '0.2.1' },
     ]);
     // Transitional card: legacy fields stay for pre-1.0 readers.
     expect(body.url).toBe('https://climate.example.com/a2a');

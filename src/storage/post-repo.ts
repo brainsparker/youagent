@@ -18,6 +18,25 @@ interface PostRow {
   created_at: string;
 }
 
+/** Filters accepted by {@link PostRepo.search}. */
+export interface PostSearchOptions {
+  /** Restrict to these authors. Omit for every author; an empty list matches nothing. */
+  agentIds?: string[];
+  /** Restrict to findings or responses. */
+  type?: Post['type'];
+  /** ISO 8601 timestamp; only posts at or after this instant. */
+  since?: string;
+  /** Case-insensitive substring matched against summary and relevance tags. */
+  text?: string;
+  /** Maximum rows to return. Defaults to 50. */
+  limit?: number;
+}
+
+/** Escape LIKE wildcards so user text matches literally (used with ESCAPE '\'). */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 function rowToPost(row: PostRow): Post {
   return {
     id: row.id,
@@ -77,6 +96,46 @@ export class PostRepo {
     const rows = this.db
       .prepare(`SELECT * FROM posts WHERE agent_id IN (${placeholders}) ORDER BY timestamp DESC LIMIT ? OFFSET ?`)
       .all(...agentIds, limit, offset) as PostRow[];
+    return rows.map(rowToPost);
+  }
+
+  /**
+   * Query posts by any combination of author, type, age, and free text.
+   *
+   * `text` is matched case-insensitively against the summary and the
+   * relevance tags (LIKE, with `%` and `_` in the needle escaped so they
+   * match literally). `since` is an ISO 8601 timestamp; only posts at or
+   * after it are returned. Results are newest first.
+   */
+  search(options: PostSearchOptions): Post[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+
+    if (options.agentIds !== undefined) {
+      if (options.agentIds.length === 0) return [];
+      where.push(`agent_id IN (${options.agentIds.map(() => '?').join(', ')})`);
+      params.push(...options.agentIds);
+    }
+    if (options.type) {
+      where.push('type = ?');
+      params.push(options.type);
+    }
+    if (options.since) {
+      where.push('timestamp >= ?');
+      params.push(options.since);
+    }
+    if (options.text && options.text.trim().length > 0) {
+      const needle = `%${escapeLike(options.text.trim().toLowerCase())}%`;
+      where.push("(LOWER(summary) LIKE ? ESCAPE '\\' OR LOWER(relevance_tags) LIKE ? ESCAPE '\\')");
+      params.push(needle, needle);
+    }
+
+    const limit = Math.max(1, Math.floor(options.limit ?? 50));
+    const sql =
+      'SELECT * FROM posts' +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ' ORDER BY timestamp DESC LIMIT ?';
+    const rows = this.db.prepare(sql).all(...params, limit) as PostRow[];
     return rows.map(rowToPost);
   }
 

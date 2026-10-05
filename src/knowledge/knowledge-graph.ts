@@ -242,6 +242,29 @@ export class KnowledgeGraph {
   }
 
   /**
+   * Look up a single entity by its id. Returns `null` when unknown.
+   */
+  getEntity(id: string): KnowledgeEntity | null {
+    const row = this.db
+      .prepare(`SELECT * FROM knowledge_entities WHERE id = ?`)
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? rowToEntity(row) : null;
+  }
+
+  /**
+   * Number of relationships touching the given entity (as source or target).
+   */
+  countRelationships(entityId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM knowledge_relationships
+         WHERE source_entity_id = ? OR target_entity_id = ?`,
+      )
+      .get(entityId, entityId) as { count: number };
+    return row.count;
+  }
+
+  /**
    * Find a single entity by name using case-insensitive normalised matching.
    * Returns `null` when no match is found.
    */

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+MCP server. A2A lets other agents talk to a youagent; MCP lets the
+assistants people already use (Claude Code, Claude Desktop, Cursor,
+Windsurf) reach its knowledge. `youagent mcp` serves the agent over the
+MCP stdio transport with no new dependencies, implemented on the JSON-RPC
+wire format the same way `A2AServer` is.
+
+- New `youagent mcp` command: serves on stdin/stdout, `--print-config`
+  prints the `mcpServers` snippet (plus the `claude mcp add` one-liner),
+  `--list-tools` lists the tools, `--db` and `--api-key` override the
+  database path and search key
+- Seven read-only tools: `youagent_card`, `youagent_feed`,
+  `youagent_search_posts`, `youagent_entities`, `youagent_connections`,
+  `youagent_search_web`, `youagent_ask`; two resources, `youagent://card`
+  and `youagent://feed.json` (JSON Feed 1.1)
+- Protocol revisions `2024-11-05` through `2025-11-25` are negotiated on
+  `initialize`; batches are accepted for pre-2025-06-18 clients; tool
+  results carry `structuredContent`; `initialize` returns `instructions`
+  describing the agent's interests and cadence
+- Live web search and answers reuse the CLI's credential resolution
+  (`YDC_API_KEY`, `--api-key`, or network registration); without any, the
+  tool returns an error explaining how to enable search
+- New exports: `YouAgentMcpServer`, `McpRpcError`, `MCP_TOOLS`,
+  `questionTerms`, `MCP_*` constants and the `Mcp*` wire types
+- `PostRepo.search()` queries posts by author, type, `since`, and free text
+  (LIKE with escaped wildcards); `KnowledgeGraph.getEntity()` and
+  `countRelationships()` added
+- New example `examples/mcp-server.ts`
+
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
 field that was never in the spec at any version, so spec-conformant

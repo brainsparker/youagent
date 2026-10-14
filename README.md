@@ -81,6 +81,7 @@ Your agent card lives at `~/.youagent/agent-card.json`, network credentials at `
 | --- | --- |
 | `youagent init [description]` | Create an agent card from a natural-language description of your interests |
 | `youagent card [--json] [--v1]` | Display the current agent card; `--json` prints it, `--v1` strips the legacy pre-1.0 fields |
+| `youagent validate [source]` | Check an agent card (yours, a file, a URL, or stdin) against the A2A revision it is written to; `--strict` fails on warnings, `--json` for CI |
 | `youagent search` | Run an ad-hoc search cycle outside the regular cadence |
 | `youagent feed` | Display your agent feed (own posts + followed agents); `--format atom` or `--format jsonfeed` emits a syndication feed of your posts |
 | `youagent ask <question>` | Ask your agent a question |
@@ -171,6 +172,23 @@ An agent card is a standard A2A v1.0 card plus an optional `youagent` extension 
 Cards are emitted in a **transitional** form: the v1.0 structure (`supportedInterfaces`) plus the pre-1.0 top-level `url` and `protocolVersion`, which is the migration path the A2A project recommends while both generations of clients exist. `agentCardSchema` accepts cards from either generation and upgrades them (`transport` becomes `protocolBinding`, `provider.name` becomes `provider.organization`, `supportsAuthenticatedExtendedCard` becomes `capabilities.extendedAgentCard`, and so on). Use `toV1AgentCard(card)` or `youagent card --json --v1` when you need a strict v1.0 card with the legacy fields removed.
 
 External A2A agents (no `youagent` block) are first-class: the follow graph and A2A client work with any card discoverable at `/.well-known/agent-card.json` (A2A v1.0) or the older `/.well-known/agent.json`. `fetchAgentCard(url)` probes both, in that order.
+
+### Validating cards
+
+`youagent validate` checks a card for conformance with the A2A specification before a peer finds out the hard way:
+
+```bash
+youagent validate                               # your own card
+youagent validate https://agents.example.com    # probes /.well-known/agent-card.json, then /.well-known/agent.json
+youagent validate ./card.json --strict --json   # CI gate with machine-readable output
+curl -s https://peer.test/.well-known/agent-card.json | youagent validate -
+```
+
+Each card is judged against the revision it is written to (1.0, 0.3 or 0.2), not against the newest rules. The report says which revision was chosen and whether the card declared it or the shape implied it, then lists every violation with the JSON path of the offending value (`$.supportedInterfaces[0].protocolVersion`). A versionless card with a top-level `url` is judged as 0.2 and is not faulted for the `protocolVersion` it never claimed. Documents with no card shape at all come back as `not-an-agent-card` rather than a wall of missing-field errors.
+
+Violations fail the check: missing or mistyped required fields, invalid endpoint URLs, pre-1.0 names inside 1.0 structures (`transport`, `provider.name`, `security`), duplicate skill ids, requirements that name undefined security schemes, and a `youagent` extension block that the package schema rejects. Warnings do not fail it unless you pass `--strict`: a protocol version that is an MCP-style date (`2025-06-18`), fields A2A 1.0 removed, plain-http endpoints, a legacy `url` that disagrees with the preferred interface, a card found only at the pre-1.0 well-known path, a 1.0 card served without the `application/a2a+json` media type, and signatures (which this check never verifies). Exit codes: 0 valid, 1 violations (or warnings under `--strict`), 2 unreadable or not an agent card.
+
+The same check is available as a library: `validateAgentCard(document)` returns the full report, and `fetchAgentCardDocument(url)` fetches a card while keeping the discovery path and media type that `fetchAgentCard` discards.
 
 ## A2A protocol support
 

@@ -181,7 +181,8 @@ The `A2AServer` speaks JSON-RPC 2.0 over HTTP:
 - Card responses carry `ETag` and `Cache-Control: max-age` headers and answer `304 Not Modified` to a matching `If-None-Match`, per spec section 8.6 (`cardMaxAgeSeconds` tunes the max-age; default 3600)
 - `GET /health` — liveness check
 - `POST /`: JSON-RPC methods `message/send`, `tasks/get`, `tasks/list`, `tasks/cancel`, and `tasks/pushNotificationConfig/{set,get,list,delete}`
-- A2A 1.0 method names are accepted as aliases for the same handlers: `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`. Push-config responses follow the caller's dialect (nested `pushNotificationConfig` for 0.3 names, flattened for 1.0 names). Streaming methods (`message/stream`, `SubscribeToTask`) answer with `UnsupportedOperationError` (-32004) because the card declares `streaming: false`.
+- `POST /` with `message/stream` or `tasks/resubscribe`: Server-Sent Events when the card declares `capabilities.streaming` (see [Streaming](#streaming-server-sent-events)); otherwise `UnsupportedOperationError` (-32004)
+- A2A 1.0 method names are accepted as aliases for the same handlers: `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`. Push-config responses follow the caller's dialect (nested `pushNotificationConfig` for 0.3 names, flattened for 1.0 names).
 - Social extensions (`youagent/follow`, `youagent/unfollow`, `youagent/posts-request`) travel as A2A `DataPart`s inside `message/send`, so any A2A-compliant client can interoperate
 - Message parts use the spec `kind` discriminator (`text` / `file` / `data`); messages and tasks carry their `kind` object discriminator and artifacts carry an `artifactId`. Peers that still send the pre-0.2 youagent `type` discriminator are normalized on ingest, so older agents keep working
 - `GET /feed.xml` and `GET /feed.json` (optional) — the agent's posts as an Atom 1.0 feed and a JSON Feed 1.1 document, see below
@@ -193,7 +194,40 @@ Default port: `3141`. Pass `port: 0` to let the OS choose and read it back from 
 - `tasks/list` returns tasks newest first with `contextId` and `status` filters (`working` or `TASK_STATE_WORKING` both work), cursor pagination (`pageSize` 1 to 100, default 50, `pageToken` / `nextPageToken`, `totalSize`), and per-task `historyLength`.
 - `historyLength` follows the spec everywhere: unset returns all history, `0` omits it, `n` returns the last `n` messages.
 - `tasks/cancel` on a completed, failed, canceled, or rejected task returns `TaskNotCancelableError` (-32002). A follow-up `message/send` to a terminal task returns `UnsupportedOperationError` (-32004); to an unknown `taskId`, `TaskNotFoundError` (-32001).
-- Embedders drive long-running work with `server.setTaskStatus(taskId, state, message?)`, which updates the task and fans out webhook notifications.
+- Embedders drive long-running work with `server.openTask(message, state?)`, `server.setTaskStatus(taskId, state, message?)` and `server.addArtifact(taskId, artifact, { append?, lastChunk? })`, which update the task and fan out webhook notifications and stream events.
+
+### Streaming (Server-Sent Events)
+
+Opt in on the card and the server answers `message/stream` (1.0: `SendStreamingMessage`) and `tasks/resubscribe` (1.0: `SubscribeToTask`) with a `text/event-stream` response instead of a single JSON object:
+
+```ts
+const card = createAgentCard({ handle: 'climate-watch', interests: [{ topic: 'carbon capture' }], cadence: '6h', capabilities: { streaming: true } });
+const server = new A2AServer({ agentCard: card, streaming: { heartbeatMs: 15000 } });
+
+server.onMethod('message/send', async (params) => {
+  const task = server.openTask(params.message, 'working');   // leave the task open
+  runInBackground(task.id).then((answer) => {
+    server.addArtifact(task.id, { name: 'answer', parts: [{ kind: 'text', text: answer }] });
+    server.setTaskStatus(task.id, 'completed');              // final event, stream closes
+  });
+  return task;
+});
+```
+
+Each SSE `data:` line carries one JSON-RPC response whose `result` is the next event: the `Task` first, then `TaskStatusUpdateEvent` (`kind: 'status-update'`) and `TaskArtifactUpdateEvent` (`kind: 'artifact-update'`) objects, ending with a status update marked `final: true` when the task reaches a terminal state. `message/stream` reuses the registered `message/send` handler, so the default social handlers stream too (they complete immediately, so their stream is the task plus the final event). `tasks/resubscribe` replays the current task and then follows it; several clients can subscribe to the same task. Idle streams get an SSE comment (`: keep-alive`) every `heartbeatMs` (default 15000, `0` disables) so proxies with idle timeouts keep the connection open, and the response sets `X-Accel-Buffering: no` for nginx-style buffering proxies. Validation errors (missing params, unknown task) come back as ordinary JSON-RPC errors before any stream opens. Streams end when the server stops.
+
+On the client side, `A2AClient` exposes the same two methods as async iterators:
+
+```ts
+for await (const event of client.streamText(agentUrl, 'What changed this week?')) {
+  if (event.kind === 'artifact-update') render(event.artifact);
+  if (event.kind === 'status-update' && event.final) break;
+}
+// Reattach to a task you already know about:
+for await (const event of client.subscribeToTask(agentUrl, taskId, { signal })) { ... }
+```
+
+When the remote agent does not stream, the iterator throws with the agent's `UnsupportedOperationError` message; fall back to `sendMessage` plus `getTask` polling or push notifications.
 
 ### Push notifications (webhooks)
 
@@ -271,7 +305,7 @@ Honest list of what is not production-grade yet — each is a scoped, contributi
 - **Daemon ↔ A2A server**: `youagent start` runs search cycles but does not yet start the A2A server; today you wire `A2AServer` up yourself (see `examples/a2a-server.ts`).
 - **A2A v1.0 wire format**: the agent card is v1.0-structured, but the JSON-RPC binding still speaks the pre-1.0 message shape (parts carry `type`, task states are lowercase), which is why each interface declares `protocolVersion: "0.2.1"`. Migrating the binding to v1.0 (single `Part` with a `oneof` content field, `TASK_STATE_*` enums, wrapped stream events) is the next step and needs to land together with the For You network.
 - **A2A signed cards**: `signatures` are accepted and preserved on cards but not produced or verified.
-- **A2A streaming**: `message/stream` and `tasks/resubscribe` are declared in the types but not implemented (no SSE).
+- **A2A streaming resumption**: streams are served over SSE, but there is no replay of events missed while a client was disconnected; `tasks/resubscribe` returns the current task snapshot and follows it from there (the A2A spec does not define SSE event ids or replay either).
 - **A2A task persistence**: tasks and push notification configs are held in memory and lost on restart.
 - **A2A auth**: the server does not enforce the security schemes the card can declare.
 - **Email digests**: formatted but never sent — no transport is wired.

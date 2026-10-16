@@ -6,8 +6,9 @@ import { v4 as uuidv4 } from 'uuid';
 import type { AgentCard } from '../types/agent-card.js';
 import { isYouAgent, getAgentIdentifier } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
-import { normalizeTask } from './compat.js';
+import { normalizeArtifact, normalizeMessage, normalizeTask } from './compat.js';
 import { fetchAgentCard } from './discovery.js';
+import { parseSseStream } from './sse.js';
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -26,6 +27,10 @@ import type {
   GetTaskPushNotificationConfigParams,
   ListTaskPushNotificationConfigParams,
   DeleteTaskPushNotificationConfigParams,
+  TaskResubscribeParams,
+  StreamEvent,
+  TaskStatusUpdateEvent,
+  TaskArtifactUpdateEvent,
   YouAgentFollowData,
   YouAgentUnfollowData,
   YouAgentPostsRequestData,
@@ -34,9 +39,50 @@ import type {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** Options for the streaming client methods. */
+export interface StreamOptions {
+  /** Abort to stop consuming the stream early; the connection is closed. */
+  signal?: AbortSignal;
+}
+
 /** JSON-RPC 2.0 client for the A2A protocol. */
 export class A2AClient {
   constructor(private senderCard: AgentCard) {}
+
+  // ── A2A streaming methods ─────────────────────────────────────────────
+
+  /**
+   * Send a message with message/stream and yield every event the remote
+   * agent emits: the Task first, then TaskStatusUpdateEvent and
+   * TaskArtifactUpdateEvent objects until a `final: true` status update
+   * closes the stream. Throws when the agent answers with a JSON-RPC error
+   * (for example UnsupportedOperation when it does not stream).
+   */
+  async *sendStreamingMessage(
+    agentUrl: string,
+    parts: Part[],
+    contextId?: string,
+    options: StreamOptions = {},
+  ): AsyncGenerator<StreamEvent> {
+    const message = this.buildMessage(parts, contextId);
+    const params: MessageSendParams = { message };
+    yield* this.stream(agentUrl, 'message/stream', params, options);
+  }
+
+  /** Stream a text message; see sendStreamingMessage. */
+  streamText(agentUrl: string, text: string, contextId?: string, options: StreamOptions = {}): AsyncGenerator<StreamEvent> {
+    const textPart: TextPart = { kind: 'text', text };
+    return this.sendStreamingMessage(agentUrl, [textPart], contextId, options);
+  }
+
+  /**
+   * Reattach to a running task with tasks/resubscribe. Yields the current
+   * Task, then updates until the task reaches a terminal state.
+   */
+  async *subscribeToTask(agentUrl: string, taskId: string, options: StreamOptions = {}): AsyncGenerator<StreamEvent> {
+    const params: TaskResubscribeParams = { id: taskId };
+    yield* this.stream(agentUrl, 'tasks/resubscribe', params, options);
+  }
 
   // ── A2A standard methods ──────────────────────────────────────────────
 
@@ -220,6 +266,62 @@ export class A2AClient {
     return response.result as T;
   }
 
+  /**
+   * POST a JSON-RPC request and yield the stream events carried by the SSE
+   * response. A JSON (non-SSE) response is the agent's error reply and is
+   * thrown. Each SSE event is a JSON-RPC response whose `result` is the
+   * event; tasks and messages are normalized the way sendMessage does.
+   */
+  private async *stream(agentUrl: string, method: string, params: unknown, options: StreamOptions): AsyncGenerator<StreamEvent> {
+    const request = this.buildJsonRpc(method, params);
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    if (options.signal?.aborted) controller.abort();
+
+    try {
+      const res = await fetch(agentUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' },
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.startsWith('text/event-stream')) {
+        const response = (await res.json()) as JsonRpcResponse;
+        if (response.error) {
+          throw new Error(`${method} failed: ${response.error.message}`);
+        }
+        throw new Error(`${method} failed: expected an event stream, got ${contentType || 'no content type'}`);
+      }
+      if (!res.body) {
+        throw new Error(`${method} failed: empty response body`);
+      }
+
+      for await (const sse of parseSseStream(res.body)) {
+        let response: JsonRpcResponse;
+        try {
+          response = JSON.parse(sse.data) as JsonRpcResponse;
+        } catch {
+          throw new Error(`${method} failed: stream event is not JSON`);
+        }
+        if (response.error) {
+          throw new Error(`${method} failed: ${response.error.message}`);
+        }
+        yield normalizeStreamEvent(response.result);
+      }
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
+      controller.abort();
+    }
+  }
+
   private async rpc(agentUrl: string, method: string, params: unknown): Promise<JsonRpcResponse> {
     const request = this.buildJsonRpc(method, params);
     let lastError: unknown;
@@ -275,5 +377,39 @@ export class A2AClient {
       method,
       params,
     };
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Normalize one streamed result the way sendMessage normalizes a Task:
+ * parts arriving with the legacy `type` discriminator are rewritten to
+ * `kind`. Unknown shapes are returned as-is so a newer peer cannot break
+ * the stream.
+ */
+export function normalizeStreamEvent(result: unknown): StreamEvent {
+  if (!result || typeof result !== 'object') return result as StreamEvent;
+  const record = result as Record<string, unknown>;
+  switch (record.kind) {
+    case 'status-update': {
+      const event = { ...(record as unknown as TaskStatusUpdateEvent) };
+      if (event.status?.message) {
+        event.status = { ...event.status, message: normalizeMessage(event.status.message) };
+      }
+      return event;
+    }
+    case 'artifact-update': {
+      const event = record as unknown as TaskArtifactUpdateEvent;
+      return { ...event, artifact: normalizeArtifact(event.artifact) };
+    }
+    case 'message':
+      return normalizeMessage(record);
+    case 'task':
+      return normalizeTask(record);
+    default:
+      // Pre-0.2 peers omit `kind`; a Task is the only unlabeled shape youagent emits.
+      if (typeof record.id === 'string' && record.status) return normalizeTask(record);
+      return result as StreamEvent;
   }
 }

@@ -254,6 +254,45 @@ export interface ListTasksResult {
   totalSize: number;
 }
 
+// ── Streaming (message/stream, tasks/resubscribe) ───────────────────────
+
+/** Params for tasks/resubscribe (A2A 1.0 SubscribeToTask): the task id. */
+export interface TaskResubscribeParams {
+  id: string;
+}
+
+/**
+ * Streamed when a task's status changes. `final: true` marks the last
+ * event of the stream; the server closes the connection after it.
+ */
+export interface TaskStatusUpdateEvent {
+  kind: 'status-update';
+  taskId: string;
+  contextId: string;
+  status: TaskStatus;
+  final: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/** Streamed when an artifact is added to, or extended on, a task. */
+export interface TaskArtifactUpdateEvent {
+  kind: 'artifact-update';
+  taskId: string;
+  contextId: string;
+  artifact: Artifact;
+  /** True when `artifact.parts` extend an artifact streamed earlier under the same artifactId. */
+  append?: boolean;
+  /** True when this is the last chunk of the artifact. */
+  lastChunk?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Everything a streaming method can emit. The first event of a
+ * message/stream or tasks/resubscribe response is always the `Task`.
+ */
+export type StreamEvent = Task | Message | TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
+
 // ── YouAgent custom message types (via DataPart) ────────────────────────
 // These are sent as DataPart payloads within standard A2A messages
 

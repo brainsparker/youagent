@@ -4,6 +4,8 @@
  * Implements the A2A task lifecycle surface: message/send, tasks/get,
  * tasks/list, tasks/cancel and the four tasks/pushNotificationConfig methods,
  * reachable under both the 0.3 method names and the 1.0 PascalCase aliases.
+ * When the card declares capabilities.streaming, message/stream and
+ * tasks/resubscribe answer with Server-Sent Events.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -50,11 +52,16 @@ import {
   type ListTasksResult,
   type PushNotificationConfig,
   type TaskPushNotificationConfig,
+  type TaskResubscribeParams,
+  type TaskStatusUpdateEvent,
+  type TaskArtifactUpdateEvent,
+  type StreamEvent,
   type YouAgentFollowData,
   type YouAgentUnfollowData,
   type YouAgentPostsRequestData,
   type YouAgentPostsResponseData,
 } from './types.js';
+import { SSE_CONTENT_TYPE, formatSseComment, formatSseEvent } from './sse.js';
 
 /** Handler function for an A2A JSON-RPC method. */
 export type A2AMethodHandler = (params: unknown, request: JsonRpcRequest) => Promise<unknown>;
@@ -105,6 +112,32 @@ export interface PushNotificationOptions {
   fetch?: typeof fetch;
 }
 
+/** Server-Sent Events streaming options (message/stream, tasks/resubscribe). */
+export interface StreamingOptions {
+  /**
+   * Whether streaming methods are served. Defaults to the card's
+   * capabilities.streaming flag, which is what clients read.
+   */
+  enabled?: boolean;
+  /**
+   * Interval between SSE comment lines sent to keep idle connections alive
+   * through proxies and load balancers that drop quiet streams. Defaults
+   * to 15000. Set to 0 to disable heartbeats.
+   */
+  heartbeatMs?: number;
+}
+
+/** Options for A2AServer.addArtifact. */
+export interface AddArtifactOptions {
+  /**
+   * Extend the parts of an artifact already on the task (matched by
+   * artifactId) instead of adding a new one. Streamed as `append: true`.
+   */
+  append?: boolean;
+  /** Mark this as the final chunk of the artifact. Streamed as `lastChunk: true`. */
+  lastChunk?: boolean;
+}
+
 /** Configuration for the A2A server. */
 export interface A2AServerConfig {
   /** Port to listen on. Defaults to 3141. Pass 0 to pick a free port. */
@@ -124,9 +157,20 @@ export interface A2AServerConfig {
   cardMaxAgeSeconds?: number;
   /** Webhook delivery settings for tasks/pushNotificationConfig. */
   pushNotifications?: PushNotificationOptions;
+  /** SSE settings for message/stream and tasks/resubscribe. */
+  streaming?: StreamingOptions;
+}
+
+/** One open SSE connection waiting for updates on a task. */
+interface StreamSubscriber {
+  res: ServerResponse;
+  requestId: JsonRpcId;
+  seq: number;
+  heartbeat?: ReturnType<typeof setInterval>;
 }
 
 const DEFAULT_PORT = 3141;
+const DEFAULT_HEARTBEAT_MS = 15_000;
 const DEFAULT_CARD_MAX_AGE_SECONDS = 3600;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
@@ -171,14 +215,18 @@ export class A2AServer {
   /** taskId -> configId -> config */
   private pushConfigs = new Map<string, Map<string, PushNotificationConfig>>();
   private pendingDeliveries = new Set<Promise<void>>();
+  /** taskId -> open SSE connections */
+  private streamSubscribers = new Map<string, Set<StreamSubscriber>>();
   private readonly port: number;
   private readonly cardMaxAgeSeconds: number;
   private readonly pushOptions: PushNotificationOptions;
+  private readonly streamingOptions: StreamingOptions;
 
   constructor(private config: A2AServerConfig) {
     this.port = config.port ?? DEFAULT_PORT;
     this.cardMaxAgeSeconds = Math.max(0, Math.floor(config.cardMaxAgeSeconds ?? DEFAULT_CARD_MAX_AGE_SECONDS));
     this.pushOptions = config.pushNotifications ?? {};
+    this.streamingOptions = config.streaming ?? {};
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.registerTaskHandlers();
   }
@@ -355,8 +403,14 @@ export class A2AServer {
     return this.port;
   }
 
-  /** Stop the server gracefully. Waits for in-flight webhook deliveries first. */
+  /**
+   * Stop the server gracefully. Ends every open SSE stream and waits for
+   * in-flight webhook deliveries first.
+   */
   async stop(): Promise<void> {
+    for (const taskId of [...this.streamSubscribers.keys()]) {
+      this.closeStreams(taskId);
+    }
     await this.flushPushNotifications();
     return new Promise<void>((resolve, reject) => {
       this.server.close((err) => {
@@ -411,9 +465,20 @@ export class A2AServer {
   }
 
   /**
-   * Move a task to a new state and notify its push subscribers. Embedders
-   * drive long-running work with this; it does not enforce terminal-state
-   * rules (tasks/cancel over the wire does).
+   * Create (or continue) a task from an incoming message without finishing
+   * it. Custom message/send handlers that start long-running work return
+   * the result of this call, then drive the task with setTaskStatus and
+   * addArtifact; streaming clients see every step.
+   */
+  openTask(incomingMessage: Message, state: TaskState = 'working'): Task {
+    return this.createTask(incomingMessage, state);
+  }
+
+  /**
+   * Move a task to a new state and notify its push and stream subscribers.
+   * Embedders drive long-running work with this; it does not enforce
+   * terminal-state rules (tasks/cancel over the wire does). A terminal
+   * state ends every open stream on the task.
    */
   setTaskStatus(taskId: string, state: TaskState, message?: Message): Task {
     const task = this.requireTask(taskId);
@@ -424,7 +489,55 @@ export class A2AServer {
     }
     task.status = status;
     this.notifyPushSubscribers(task);
+    this.emitStatusUpdate(task);
     return task;
+  }
+
+  /**
+   * Add an artifact to a task (or extend one with `append`) and stream it
+   * to subscribers as a TaskArtifactUpdateEvent. Push subscribers receive
+   * the updated Task. Returns the stored artifact, which always carries an
+   * artifactId.
+   */
+  addArtifact(taskId: string, artifact: Artifact, options: AddArtifactOptions = {}): Artifact {
+    const task = this.requireTask(taskId);
+    const artifactId = artifact.artifactId ?? uuidv4();
+    const incoming: Artifact = { ...artifact, artifactId };
+    const artifacts = task.artifacts ?? [];
+    const existing = options.append ? artifacts.find((a) => a.artifactId === artifactId) : undefined;
+    if (existing) {
+      existing.parts = [...existing.parts, ...incoming.parts];
+      if (incoming.name !== undefined) existing.name = incoming.name;
+      if (incoming.description !== undefined) existing.description = incoming.description;
+      if (incoming.metadata !== undefined) existing.metadata = incoming.metadata;
+    } else {
+      artifacts.push(incoming);
+    }
+    task.artifacts = artifacts;
+    this.notifyPushSubscribers(task);
+
+    const event: TaskArtifactUpdateEvent = {
+      kind: 'artifact-update',
+      taskId: task.id,
+      contextId: task.contextId,
+      artifact: incoming,
+    };
+    if (options.append) event.append = true;
+    if (options.lastChunk) event.lastChunk = true;
+    this.emitStreamEvent(task.id, event);
+    return incoming;
+  }
+
+  /** Whether message/stream and tasks/resubscribe are served over SSE. */
+  get streamingEnabled(): boolean {
+    return this.streamingOptions.enabled ?? this.config.agentCard.capabilities?.streaming === true;
+  }
+
+  /** Number of open SSE connections, across all tasks. Useful in tests and health checks. */
+  get openStreamCount(): number {
+    let count = 0;
+    for (const subscribers of this.streamSubscribers.values()) count += subscribers.size;
+    return count;
   }
 
   /** Resolve once every webhook delivery started so far has settled. */
@@ -476,7 +589,123 @@ export class A2AServer {
       this.taskSeq.set(taskId, this.nextSeq++);
     }
     this.notifyPushSubscribers(task);
+    // A follow-up message on an existing task is a state change its
+    // stream subscribers need to see.
+    if (existing) this.emitStatusUpdate(task);
     return task;
+  }
+
+  // ── Streaming (SSE) ────────────────────────────────────────────────────
+
+  /**
+   * Serve message/stream and tasks/resubscribe. Both open a
+   * `text/event-stream` response whose first event is the Task; status and
+   * artifact updates follow until a terminal state closes the stream with a
+   * `final: true` TaskStatusUpdateEvent. Validation errors are returned as
+   * ordinary JSON-RPC error responses before any stream is opened.
+   */
+  private async handleStream(req: IncomingMessage, res: ServerResponse, request: JsonRpcRequest, canonical: string): Promise<void> {
+    let task: Task;
+    try {
+      if (canonical === 'message/stream') {
+        const send = this.handlers.get('message/send');
+        if (!send) {
+          throw rpcError(UNSUPPORTED_OPERATION, 'message/stream requires a message/send handler');
+        }
+        const result = await send(request.params, { ...request, method: 'message/send' });
+        if (!isTaskLike(result)) {
+          throw rpcError(INTERNAL_ERROR, 'message/send handler did not return a Task');
+        }
+        task = result;
+      } else {
+        const { id } = this.requireParams<TaskResubscribeParams>(request.params, ['id']);
+        task = this.requireTask(id);
+      }
+    } catch (err) {
+      this.sendHandlerError(res, request.id, err);
+      return;
+    }
+
+    // From here on the response is a stream; errors can no longer be JSON.
+    res.writeHead(200, {
+      'Content-Type': SSE_CONTENT_TYPE,
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      // Tell nginx-style proxies not to buffer the response.
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
+
+    const subscriber: StreamSubscriber = { res, requestId: request.id, seq: 0 };
+    this.writeStreamEvent(subscriber, task);
+
+    if (isTerminalTaskState(task.status.state)) {
+      this.writeStreamEvent(subscriber, statusUpdateEvent(task, true));
+      res.end();
+      return;
+    }
+
+    let subscribers = this.streamSubscribers.get(task.id);
+    if (!subscribers) {
+      subscribers = new Set();
+      this.streamSubscribers.set(task.id, subscribers);
+    }
+    subscribers.add(subscriber);
+
+    const heartbeatMs = this.streamingOptions.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
+    if (heartbeatMs > 0) {
+      subscriber.heartbeat = setInterval(() => {
+        if (!res.writableEnded) res.write(formatSseComment('keep-alive'));
+      }, heartbeatMs);
+      subscriber.heartbeat.unref?.();
+    }
+
+    const cleanup = () => this.removeSubscriber(task.id, subscriber);
+    res.on('close', cleanup);
+    req.on('error', cleanup);
+  }
+
+  /** Stream a TaskStatusUpdateEvent for the task's current status; terminal states close the streams. */
+  private emitStatusUpdate(task: Task): void {
+    const final = isTerminalTaskState(task.status.state);
+    this.emitStreamEvent(task.id, statusUpdateEvent(task, final));
+    if (final) this.closeStreams(task.id);
+  }
+
+  private emitStreamEvent(taskId: string, event: StreamEvent): void {
+    const subscribers = this.streamSubscribers.get(taskId);
+    if (!subscribers) return;
+    for (const subscriber of subscribers) {
+      this.writeStreamEvent(subscriber, event);
+    }
+  }
+
+  /** One SSE event carrying a JSON-RPC response whose result is the stream event. */
+  private writeStreamEvent(subscriber: StreamSubscriber, event: StreamEvent): void {
+    if (subscriber.res.writableEnded || subscriber.res.destroyed) return;
+    const response: JsonRpcResponse = { jsonrpc: '2.0', id: subscriber.requestId, result: event };
+    subscriber.seq += 1;
+    subscriber.res.write(formatSseEvent(JSON.stringify(response), { id: subscriber.seq }));
+  }
+
+  private closeStreams(taskId: string): void {
+    const subscribers = this.streamSubscribers.get(taskId);
+    if (!subscribers) return;
+    for (const subscriber of [...subscribers]) {
+      this.removeSubscriber(taskId, subscriber);
+      if (!subscriber.res.writableEnded) subscriber.res.end();
+    }
+  }
+
+  private removeSubscriber(taskId: string, subscriber: StreamSubscriber): void {
+    if (subscriber.heartbeat) {
+      clearInterval(subscriber.heartbeat);
+      subscriber.heartbeat = undefined;
+    }
+    const subscribers = this.streamSubscribers.get(taskId);
+    if (!subscribers) return;
+    subscribers.delete(subscriber);
+    if (subscribers.size === 0) this.streamSubscribers.delete(taskId);
   }
 
   /** A follow-up message must target an existing, non-terminal task. */
@@ -847,9 +1076,10 @@ export class A2AServer {
 
     // Route to handler, accepting 1.0 PascalCase aliases
     const canonical = A2A_V1_METHOD_ALIASES[request.method] ?? request.method;
-    const handler = this.handlers.get(canonical);
-    if (!handler) {
-      if (STREAMING_METHODS.has(canonical)) {
+
+    // Streaming methods answer over SSE when the card declares the capability.
+    if (STREAMING_METHODS.has(canonical)) {
+      if (!this.streamingEnabled) {
         this.sendJsonRpcError(
           res,
           request.id,
@@ -858,6 +1088,12 @@ export class A2AServer {
         );
         return;
       }
+      await this.handleStream(req, res, request, canonical);
+      return;
+    }
+
+    const handler = this.handlers.get(canonical);
+    if (!handler) {
       this.sendJsonRpcError(res, request.id, METHOD_NOT_FOUND, `Method not found: ${request.method}`);
       return;
     }
@@ -871,14 +1107,19 @@ export class A2AServer {
       };
       this.sendJson(res, 200, response);
     } catch (err) {
-      if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
-        // Already a JsonRpcError-shaped object
-        const rpcErr = err as JsonRpcError;
-        this.sendJsonRpcError(res, request.id, rpcErr.code, rpcErr.message, rpcErr.data);
-      } else {
-        const message = err instanceof Error ? err.message : 'Internal error';
-        this.sendJsonRpcError(res, request.id, INTERNAL_ERROR, message);
-      }
+      this.sendHandlerError(res, request.id, err);
+    }
+  }
+
+  /** Map a thrown handler error to a JSON-RPC error response. */
+  private sendHandlerError(res: ServerResponse, id: JsonRpcId, err: unknown): void {
+    if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+      // Already a JsonRpcError-shaped object
+      const rpcErr = err as JsonRpcError;
+      this.sendJsonRpcError(res, id, rpcErr.code, rpcErr.message, rpcErr.data);
+    } else {
+      const message = err instanceof Error ? err.message : 'Internal error';
+      this.sendJsonRpcError(res, id, INTERNAL_ERROR, message);
     }
   }
 
@@ -921,6 +1162,29 @@ export class A2AServer {
 /** True for A2A 1.0 PascalCase method names. */
 function isV1Method(method: string): boolean {
   return method in A2A_V1_METHOD_ALIASES;
+}
+
+/** Loose structural check for a Task returned by a message/send handler. */
+function isTaskLike(value: unknown): value is Task {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as Task).id === 'string' &&
+    typeof (value as Task).contextId === 'string' &&
+    !!(value as Task).status &&
+    typeof (value as Task).status.state === 'string'
+  );
+}
+
+/** Build the TaskStatusUpdateEvent for a task's current status. */
+export function statusUpdateEvent(task: Task, final: boolean): TaskStatusUpdateEvent {
+  return {
+    kind: 'status-update',
+    taskId: task.id,
+    contextId: task.contextId,
+    status: task.status,
+    final,
+  };
 }
 
 /**

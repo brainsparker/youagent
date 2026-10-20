@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { A2A_TASK_TABLES_SQL } from './sqlite-task-store.js';
 
 const DEFAULT_DB_PATH = join(homedir(), '.youagent', 'youagent.db');
 
@@ -133,6 +134,9 @@ export class AgentDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_search_history_agent_id ON search_history (agent_id);
     `);
+
+    // A2A tasks and push notification configs served by the daemon.
+    this.db.exec(A2A_TASK_TABLES_SQL);
 
     // Migration: add card_type column for existing databases
     const cols = this.db.prepare("PRAGMA table_info(agent_cards)").all() as Array<{ name: string }>;

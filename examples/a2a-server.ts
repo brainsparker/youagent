@@ -1,6 +1,10 @@
 /**
  * Serve an agent over the A2A protocol.
  *
+ * This is the manual wiring. `youagent start` does all of it for your real
+ * agent (with the post and follow repos connected and tasks persisted in
+ * SQLite); use this example when you embed A2AServer in your own process.
+ *
  * Once running, try:
  *   curl -i http://localhost:3141/.well-known/agent-card.json   # A2A v1.0 discovery path
  *   curl http://localhost:3141/.well-known/agent.json           # pre-1.0 path, still served
@@ -33,6 +37,10 @@ const server = new A2AServer({
   },
   // Local development only: allow webhook URLs on localhost.
   pushNotifications: { allowPrivateHosts: true },
+  // Tasks default to memory. To keep them across restarts, open the agent
+  // database and pass a SqliteTaskStore:
+  //   const db = new AgentDatabase('.example-agent/youagent.db'); db.initialize();
+  //   taskStore: new SqliteTaskStore(db.getDb()),
 });
 
 server.registerYouAgentHandlers({

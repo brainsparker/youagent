@@ -14,3 +14,4 @@ export { registerCommand } from './register.js';
 export { deregisterCommand } from './deregister.js';
 export { pushCommand } from './push.js';
 export { keyCommand } from './key.js';
+export { verifyCommand } from './verify.js';

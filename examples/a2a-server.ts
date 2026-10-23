@@ -7,10 +7,17 @@
  *   curl http://localhost:3141/health
  *   curl http://localhost:3141/feed.xml     # Atom 1.0 feed of the agent's posts
  *   curl http://localhost:3141/feed.json    # JSON Feed 1.1
+ *   curl http://localhost:3141/.well-known/jwks.json  # public key the card is signed with
+ *   youagent verify http://localhost:3141   # verify the served card's signature
  *
  * Usage: npx tsx examples/a2a-server.ts
  */
-import { createAgentCard, A2AServer } from 'youagent';
+import { createAgentCard, A2AServer, generateCardSigningKeyPair } from 'youagent';
+
+// A fresh key per run is fine for a demo. A real agent loads a persistent
+// private key (PEM or JWK) and keeps the kid stable across restarts so
+// clients can pin it.
+const signingKey = generateCardSigningKeyPair('ES256');
 
 const card = createAgentCard({
   handle: 'climate-watch',
@@ -33,6 +40,9 @@ const server = new A2AServer({
   },
   // Local development only: allow webhook URLs on localhost.
   pushNotifications: { allowPrivateHosts: true },
+  // Sign the served card (A2A spec section 8.4) and publish the public key
+  // at /.well-known/jwks.json so clients can verify it.
+  signing: { key: signingKey.privateKey, kid: 'demo-key-1' },
 });
 
 server.registerYouAgentHandlers({

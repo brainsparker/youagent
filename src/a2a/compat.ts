@@ -13,7 +13,18 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import type { Artifact, DataPart, FilePart, Message, Part, Task, TextPart } from './types.js';
+import type {
+  Artifact,
+  DataPart,
+  FilePart,
+  Message,
+  Part,
+  StreamEvent,
+  Task,
+  TaskArtifactUpdateEvent,
+  TaskStatusUpdateEvent,
+  TextPart,
+} from './types.js';
 
 /**
  * Normalize a single part from the wire into a spec-shaped `Part`.
@@ -125,4 +136,113 @@ export function normalizeTask(task: unknown): Task {
   }
 
   return normalized;
+}
+
+/**
+ * Normalize one item received on a task stream (message/stream or
+ * tasks/resubscribe) into the 0.3-shaped `StreamEvent` youagent works with.
+ *
+ * Accepts the bare 0.3 objects (`kind: 'task' | 'message' | 'status-update'
+ * | 'artifact-update'`) and the A2A 1.0 `StreamResponse` oneof wrapper
+ * (`{ task }`, `{ message }`, `{ statusUpdate }`, `{ artifactUpdate }`).
+ * Parts inside are normalized like every other ingest boundary. Throws on
+ * shapes that are neither, so a misbehaving peer fails loudly.
+ */
+export function normalizeStreamEvent(event: unknown): StreamEvent {
+  if (event === null || typeof event !== 'object') {
+    throw new Error('Invalid A2A stream event: expected an object');
+  }
+  const raw = event as Record<string, unknown>;
+
+  // A2A 1.0 StreamResponse wrapper.
+  if (raw.task !== undefined) return normalizeTask(raw.task);
+  if (raw.message !== undefined && raw.parts === undefined) return normalizeMessage(raw.message);
+  if (raw.statusUpdate !== undefined) return normalizeStatusUpdate(raw.statusUpdate, true);
+  if (raw.artifactUpdate !== undefined) return normalizeArtifactUpdate(raw.artifactUpdate);
+
+  // Bare 0.3 objects.
+  switch (raw.kind) {
+    case 'task':
+      return normalizeTask(raw);
+    case 'message':
+      return normalizeMessage(raw);
+    case 'status-update':
+      return normalizeStatusUpdate(raw, false);
+    case 'artifact-update':
+      return normalizeArtifactUpdate(raw);
+    default:
+      break;
+  }
+
+  // Undiscriminated 0.3 objects: infer from shape.
+  if (typeof raw.id === 'string' && raw.status !== undefined) return normalizeTask(raw);
+  if (typeof raw.role === 'string' && Array.isArray(raw.parts)) return normalizeMessage(raw);
+  if (raw.artifact !== undefined && typeof raw.taskId === 'string') return normalizeArtifactUpdate(raw);
+  if (raw.status !== undefined && typeof raw.taskId === 'string') return normalizeStatusUpdate(raw, false);
+
+  throw new Error(`Invalid A2A stream event: unknown shape ${JSON.stringify(Object.keys(raw))}`);
+}
+
+function normalizeStatusUpdate(value: unknown, fromV1Wrapper: boolean): TaskStatusUpdateEvent {
+  if (value === null || typeof value !== 'object') {
+    throw new Error('Invalid A2A status update: expected an object');
+  }
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.taskId !== 'string' || typeof raw.contextId !== 'string') {
+    throw new Error('Invalid A2A status update: missing taskId or contextId');
+  }
+  const status = raw.status as Record<string, unknown> | undefined;
+  if (!status || typeof status !== 'object' || typeof status.state !== 'string') {
+    throw new Error('Invalid A2A status update: missing status.state');
+  }
+  const state = normalizeStateName(status.state);
+  const normalizedStatus: TaskStatusUpdateEvent['status'] = {
+    state,
+    timestamp: typeof status.timestamp === 'string' ? status.timestamp : new Date().toISOString(),
+  };
+  if (status.message) normalizedStatus.message = normalizeMessage(status.message);
+
+  const event: TaskStatusUpdateEvent = {
+    kind: 'status-update',
+    taskId: raw.taskId,
+    contextId: raw.contextId,
+    status: normalizedStatus,
+    // 1.0 has no `final`; the stream closing is the signal. Derive it from the state.
+    final: typeof raw.final === 'boolean' && !fromV1Wrapper ? raw.final : isTerminalStateName(state),
+  };
+  if (raw.metadata && typeof raw.metadata === 'object') {
+    event.metadata = raw.metadata as Record<string, unknown>;
+  }
+  return event;
+}
+
+function normalizeArtifactUpdate(value: unknown): TaskArtifactUpdateEvent {
+  if (value === null || typeof value !== 'object') {
+    throw new Error('Invalid A2A artifact update: expected an object');
+  }
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.taskId !== 'string' || typeof raw.contextId !== 'string') {
+    throw new Error('Invalid A2A artifact update: missing taskId or contextId');
+  }
+  const event: TaskArtifactUpdateEvent = {
+    kind: 'artifact-update',
+    taskId: raw.taskId,
+    contextId: raw.contextId,
+    artifact: normalizeArtifact(raw.artifact),
+  };
+  if (typeof raw.append === 'boolean') event.append = raw.append;
+  if (typeof raw.lastChunk === 'boolean') event.lastChunk = raw.lastChunk;
+  if (raw.metadata && typeof raw.metadata === 'object') {
+    event.metadata = raw.metadata as Record<string, unknown>;
+  }
+  return event;
+}
+
+/** Accept "working" or the 1.0 enum spelling "TASK_STATE_WORKING". */
+function normalizeStateName(value: string): Task['status']['state'] {
+  return value.replace(/^TASK_STATE_/, '').toLowerCase().replace(/_/g, '-') as Task['status']['state'];
+}
+
+function isTerminalStateName(state: string): boolean {
+  return state === 'completed' || state === 'canceled' || state === 'failed' || state === 'rejected';
 }

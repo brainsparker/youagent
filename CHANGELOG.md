@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+A2A HTTP+JSON/REST protocol binding. A2A v1.0 defines three bindings
+(JSON-RPC, gRPC, HTTP+JSON/REST); youagent served only JSON-RPC, so REST
+clients such as the a2a-js `RestTransport`, the Handler CLI, and the
+a2a-tck `http_json` suite could not reach it. `A2AServer` now serves the
+REST binding beside the JSON-RPC endpoint, over the same handlers and
+task store.
+
+- Routes per spec section 5.3 with no `/v1` prefix: `POST /message:send`,
+  `GET /tasks/{id}` (`?historyLength`), `GET /tasks` (camelCase query
+  filters and cursor pagination), `POST /tasks/{id}:cancel`,
+  `POST /tasks/{id}/pushNotificationConfigs` (201), `GET` list and get,
+  `DELETE` (204), plus `GET /extendedAgentCard`
+- `POST /message:stream` and `POST /tasks/{id}:subscribe` (GET accepted
+  too) answer `400 UNSUPPORTED_OPERATION` while the card declares
+  `streaming: false`, mirroring the JSON-RPC behavior
+- Errors are `google.rpc.Status` JSON (spec section 11.6) with the section
+  5.4 HTTP status and a `google.rpc.ErrorInfo` detail (`reason`,
+  `domain: a2a-protocol.org`); JSON-RPC structural errors surface as
+  `400 INVALID_ARGUMENT` with reason `REQUEST_MALFORMED`
+- Requests accept `application/json` or `application/a2a+json` and
+  anything else is `ContentTypeNotSupportedError`; responses are
+  `application/a2a+json`
+- The served card gains an `HTTP+JSON` entry in `supportedInterfaces` for
+  each JSON-RPC entry (JSON-RPC stays first); new `restBinding: false`
+  option disables the binding and the advertisement
+- New `src/a2a/rest.ts` exports: `matchRestRoute`, `REST_ROUTES`,
+  `restStatusFor`, `toRestErrorBody`, `withHttpJsonInterface`,
+  `A2A_REST_CONTENT_TYPE`, `A2A_ERROR_DOMAIN`, `A2A_ERROR_INFO_TYPE`
+- `A2A_ERROR_CODES` gains the 1.0 codes `EXTENDED_AGENT_CARD_NOT_CONFIGURED`
+  (-32007), `EXTENSION_SUPPORT_REQUIRED` (-32008) and
+  `VERSION_NOT_SUPPORTED` (-32009)
+
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
 field that was never in the spec at any version, so spec-conformant

@@ -21,6 +21,16 @@ import {
 import type { Post } from '../types/post.js';
 import { normalizeMessage } from './compat.js';
 import {
+  A2A_REST_CONTENT_TYPE,
+  JSON_CONTENT_TYPE,
+  coerceQueryNumber,
+  matchRestRoute,
+  restStatusFor,
+  toRestErrorBody,
+  withHttpJsonInterface,
+  type RestRouteMatch,
+} from './rest.js';
+import {
   ATOM_CONTENT_TYPE,
   DEFAULT_FEED_LIMIT,
   JSON_FEED_CONTENT_TYPE,
@@ -124,6 +134,15 @@ export interface A2AServerConfig {
   cardMaxAgeSeconds?: number;
   /** Webhook delivery settings for tasks/pushNotificationConfig. */
   pushNotifications?: PushNotificationOptions;
+  /**
+   * Serve the A2A HTTP+JSON/REST binding (spec section 11) beside the
+   * JSON-RPC endpoint: `POST /message:send`, `GET /tasks/{id}`,
+   * `GET /tasks`, `POST /tasks/{id}:cancel`, the push notification config
+   * sub-resource, and `GET /extendedAgentCard`. The served card gains an
+   * `HTTP+JSON` entry in `supportedInterfaces` for every JSON-RPC entry.
+   * Defaults to true. Set false to expose JSON-RPC only.
+   */
+  restBinding?: boolean;
 }
 
 const DEFAULT_PORT = 3141;
@@ -174,11 +193,16 @@ export class A2AServer {
   private readonly port: number;
   private readonly cardMaxAgeSeconds: number;
   private readonly pushOptions: PushNotificationOptions;
+  private readonly restEnabled: boolean;
+  /** The card as served: the configured card plus the REST interface when enabled. */
+  private readonly servedCard: AgentCard;
 
   constructor(private config: A2AServerConfig) {
     this.port = config.port ?? DEFAULT_PORT;
     this.cardMaxAgeSeconds = Math.max(0, Math.floor(config.cardMaxAgeSeconds ?? DEFAULT_CARD_MAX_AGE_SECONDS));
     this.pushOptions = config.pushNotifications ?? {};
+    this.restEnabled = config.restBinding ?? true;
+    this.servedCard = this.restEnabled ? withHttpJsonInterface(config.agentCard) : config.agentCard;
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.registerTaskHandlers();
   }
@@ -709,7 +733,173 @@ export class A2AServer {
       return;
     }
 
+    // HTTP+JSON/REST binding (spec section 11), same handlers as JSON-RPC.
+    if (this.restEnabled) {
+      const route = matchRestRoute(method, pathname);
+      if (route) {
+        await this.handleRest(req, res, route);
+        return;
+      }
+    }
+
     this.sendJson(res, 404, { error: 'not found' });
+  }
+
+  // ── HTTP+JSON/REST binding ──────────────────────────────────────────────
+
+  /**
+   * Translate one REST request into a call on the shared method handler
+   * and shape the response per the spec's REST column. The handler is
+   * invoked under the 1.0 PascalCase operation name so push-config
+   * responses come back in the flattened 1.0 shape, which is also what
+   * the REST binding specifies.
+   */
+  private async handleRest(req: IncomingMessage, res: ServerResponse, route: RestRouteMatch): Promise<void> {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const request: JsonRpcRequest = { jsonrpc: '2.0', id: 'rest', method: route.operation };
+
+    try {
+      const body = route.hasBody ? await this.readRestBody(req) : undefined;
+
+      if (route.method === 'agent/getExtendedAgentCard') {
+        // Spec section 11.3.4. youagent has no separate authenticated card,
+        // so the extended-card capability is never declared.
+        throw rpcError(
+          A2A_ERROR_CODES.EXTENDED_AGENT_CARD_NOT_CONFIGURED,
+          'This agent does not serve an extended agent card (capabilities.extendedAgentCard is false)',
+        );
+      }
+
+      const handler = this.handlers.get(route.method);
+      if (!handler) {
+        if (STREAMING_METHODS.has(route.method)) {
+          throw rpcError(
+            UNSUPPORTED_OPERATION,
+            `${route.operation} is not supported: this agent does not stream (capabilities.streaming is false)`,
+          );
+        }
+        throw rpcError(METHOD_NOT_FOUND, `Operation not available: ${route.operation}`);
+      }
+
+      const params = this.restParams(route, url, body);
+      const result = await handler(params, request);
+      this.sendRestResult(res, route, result);
+    } catch (err) {
+      const rpcErr: JsonRpcError =
+        err && typeof err === 'object' && 'code' in err && 'message' in err
+          ? (err as JsonRpcError)
+          : rpcError(INTERNAL_ERROR, err instanceof Error ? err.message : 'Internal error');
+      this.sendRest(res, restStatusFor(rpcErr.code), toRestErrorBody(rpcErr));
+    }
+  }
+
+  /**
+   * Build the params object the shared handler expects from path
+   * parameters, query parameters (GET / DELETE, spec section 11.5) and the
+   * JSON body (POST, spec section 11.4).
+   */
+  private restParams(route: RestRouteMatch, url: URL, body: unknown): unknown {
+    const q = url.searchParams;
+    const { id, configId } = route.params;
+    const bodyObj = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+
+    switch (route.method) {
+      case 'message/send':
+      case 'message/stream':
+        // SendMessageRequest: { message, configuration?, metadata? }
+        return bodyObj;
+      case 'tasks/get':
+        return { id, historyLength: coerceQueryNumber(q.get('historyLength')) };
+      case 'tasks/list': {
+        const params: Record<string, unknown> = {};
+        const contextId = q.get('contextId');
+        const status = q.get('status');
+        const pageToken = q.get('pageToken');
+        if (contextId) params.contextId = contextId;
+        if (status) params.status = status;
+        if (pageToken) params.pageToken = pageToken;
+        const pageSize = coerceQueryNumber(q.get('pageSize'));
+        if (pageSize !== undefined) params.pageSize = pageSize;
+        const historyLength = coerceQueryNumber(q.get('historyLength'));
+        if (historyLength !== undefined) params.historyLength = historyLength;
+        return params;
+      }
+      case 'tasks/cancel':
+      case 'tasks/resubscribe':
+        return { id };
+      case 'tasks/pushNotificationConfig/set':
+        // 1.0 flattened TaskPushNotificationConfig; the task id comes from
+        // the path and wins over anything in the body.
+        return { ...bodyObj, taskId: id };
+      case 'tasks/pushNotificationConfig/list':
+        return { taskId: id };
+      case 'tasks/pushNotificationConfig/get':
+      case 'tasks/pushNotificationConfig/delete':
+        return { taskId: id, id: configId };
+      default:
+        return bodyObj;
+    }
+  }
+
+  /** Shape a handler result per the REST column and send it. */
+  private sendRestResult(res: ServerResponse, route: RestRouteMatch, result: unknown): void {
+    switch (route.method) {
+      case 'message/send':
+        // SendMessageResponse is a oneof { task } | { message }. youagent
+        // handlers always answer with a Task.
+        this.sendRest(res, 200, { task: result });
+        return;
+      case 'tasks/pushNotificationConfig/set':
+        this.sendRest(res, 201, result);
+        return;
+      case 'tasks/pushNotificationConfig/delete':
+        res.writeHead(204, { 'Content-Type': A2A_REST_CONTENT_TYPE });
+        res.end();
+        return;
+      default:
+        this.sendRest(res, 200, result);
+    }
+  }
+
+  /**
+   * Read and parse a REST request body. Accepts `application/json` and
+   * `application/a2a+json` (spec section 11.1); anything else is
+   * ContentTypeNotSupportedError. A missing or empty body on a
+   * body-bearing route parses as an empty object so the handler's own
+   * validation produces the specific missing-field message.
+   */
+  private async readRestBody(req: IncomingMessage): Promise<unknown> {
+    const rawType = req.headers['content-type'];
+    if (rawType) {
+      const mediaType = String(rawType).split(';', 1)[0].trim().toLowerCase();
+      if (mediaType !== JSON_CONTENT_TYPE && mediaType !== A2A_REST_CONTENT_TYPE) {
+        throw rpcError(
+          A2A_ERROR_CODES.CONTENT_TYPE_NOT_SUPPORTED,
+          `Unsupported Content-Type "${String(rawType)}"; expected ${JSON_CONTENT_TYPE} or ${A2A_REST_CONTENT_TYPE}`,
+        );
+      }
+    }
+    let text: string;
+    try {
+      text = await this.readBody(req);
+    } catch {
+      throw rpcError(PARSE_ERROR, 'Failed to read request body');
+    }
+    if (text.trim() === '') return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw rpcError(PARSE_ERROR, 'Invalid JSON payload');
+    }
+  }
+
+  private sendRest(res: ServerResponse, status: number, data: unknown): void {
+    const body = JSON.stringify(data);
+    res.writeHead(status, {
+      'Content-Type': A2A_REST_CONTENT_TYPE,
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
   }
 
   private async handleFeed(res: ServerResponse, parsed: URL): Promise<void> {
@@ -778,7 +968,7 @@ export class A2AServer {
    * paths keep `application/json` for clients that predate the media type.
    */
   private sendAgentCard(req: IncomingMessage, res: ServerResponse, v1Path: boolean): void {
-    const body = JSON.stringify(this.config.agentCard);
+    const body = JSON.stringify(this.servedCard);
     const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 32)}"`;
     const headers: Record<string, string> = {
       'Content-Type': v1Path ? A2A_CARD_MEDIA_TYPE : 'application/json',

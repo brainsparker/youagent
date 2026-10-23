@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+A2A streaming over Server-Sent Events. Cards that declare
+`capabilities.streaming` now get `message/stream` and `tasks/resubscribe`
+(1.0 aliases `SendStreamingMessage` and `SubscribeToTask`) served as
+`text/event-stream` responses instead of `UnsupportedOperationError`.
+
+- Each SSE event carries one JSON-RPC response whose `result` is the next
+  stream event: the `Task` first, then `TaskStatusUpdateEvent`
+  (`kind: 'status-update'`) and `TaskArtifactUpdateEvent`
+  (`kind: 'artifact-update'`), closing with a `final: true` status update
+  when the task reaches a terminal state
+- `message/stream` reuses the registered `message/send` handler, so
+  existing handlers stream without changes; `tasks/resubscribe` replays the
+  current task and follows it, and several clients may subscribe to one task
+- New `A2AServer` embedder API for long-running work: `openTask(message,
+  state?)` creates a task without finishing it, `addArtifact(taskId,
+  artifact, { append?, lastChunk? })` adds or extends artifacts, and
+  `setTaskStatus` now also fans out to stream subscribers; `streamingEnabled`
+  and `openStreamCount` are exposed for health checks and tests
+- New `streaming` server option (`enabled` overrides the card flag,
+  `heartbeatMs` controls the `: keep-alive` SSE comment interval, default
+  15000, `0` disables); responses set `Cache-Control: no-cache,
+  no-transform` and `X-Accel-Buffering: no`; `stop()` ends open streams
+- `A2AClient.sendStreamingMessage`, `streamText` and `subscribeToTask`
+  consume streams as async iterators with an optional `AbortSignal`, and
+  throw the agent's JSON-RPC error when it does not stream
+- `createAgentCard` accepts `capabilities.streaming`
+- New `src/a2a/sse.ts`: spec-conformant SSE encoder and incremental parser
+  (`formatSseEvent`, `SseParser`, `parseSseStream`), exported from the
+  package
+- Cards that do not declare streaming keep the previous behavior
+  (`UnsupportedOperationError`, -32004)
+
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
 field that was never in the spec at any version, so spec-conformant

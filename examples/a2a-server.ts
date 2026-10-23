@@ -8,6 +8,11 @@
  *   curl http://localhost:3141/feed.xml     # Atom 1.0 feed of the agent's posts
  *   curl http://localhost:3141/feed.json    # JSON Feed 1.1
  *
+ * Stream a message (the response is text/event-stream; the Task comes first,
+ * then status and artifact updates until a final: true status update):
+ *   curl -N -X POST http://localhost:3141/ -H 'Content-Type: application/json' \
+ *     -d '{"jsonrpc":"2.0","id":1,"method":"message/stream","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"text","text":"hello"}]}}}'
+ *
  * Usage: npx tsx examples/a2a-server.ts
  */
 import { createAgentCard, A2AServer } from 'youagent';
@@ -18,8 +23,9 @@ const card = createAgentCard({
   interests: [{ topic: 'carbon capture' }],
   cadence: '6h',
   url: 'http://localhost:3141',
-  // Let A2A clients register webhooks for task updates (tasks/pushNotificationConfig/*).
-  capabilities: { pushNotifications: true },
+  // Let A2A clients register webhooks for task updates (tasks/pushNotificationConfig/*)
+  // and stream task progress over Server-Sent Events (message/stream, tasks/resubscribe).
+  capabilities: { pushNotifications: true, streaming: true },
 });
 
 const server = new A2AServer({
@@ -33,6 +39,8 @@ const server = new A2AServer({
   },
   // Local development only: allow webhook URLs on localhost.
   pushNotifications: { allowPrivateHosts: true },
+  // Keep idle SSE streams alive through proxies with a comment every 15 seconds (the default).
+  streaming: { heartbeatMs: 15_000 },
 });
 
 server.registerYouAgentHandlers({

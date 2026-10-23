@@ -1,5 +1,6 @@
 export { initCommand } from './init.js';
 export { cardCommand } from './card.js';
+export { validateCommand } from './validate.js';
 export { feedCommand } from './feed.js';
 export { startCommand } from './start.js';
 export { stopCommand } from './stop.js';

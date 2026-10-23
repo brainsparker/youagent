@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+Agent card conformance validation. `youagent validate [source]` checks a
+card (your own, a file, an agent URL, or stdin) against the A2A revision it
+is written to, and the same check ships as a library function.
+
+- Cards are judged by their own revision (1.0, 0.3 or 0.2); the report
+  carries `judgedAgainst`, `versionSource` (`declared`, `inferred`, `none`)
+  and a one-line `whyThisVersion`, so a correct 0.3 card is not graded by
+  1.0 rules and a versionless 0.2-shaped card is not faulted for a
+  `protocolVersion` it never claimed
+- Every violation has a stable `code` and the JSON path of the offending
+  value; warnings (MCP-style date protocol versions, deprecated 0.3 fields
+  in 1.0 cards, plain-http endpoints, legacy `url` disagreeing with the
+  preferred interface, legacy-only discovery path, wrong media type,
+  unverified signatures) are reported separately and only fail under
+  `--strict`
+- Documents with no agent-card shape return `not-an-agent-card` with
+  `valid: null` instead of a list of missing fields
+- New exports: `validateAgentCard`, `fetchAgentCardDocument`,
+  `detectCardRevision`, `AgentCardFetchError`, and the
+  `CardValidationReport`, `CardIssue`, `CardDocumentSource` types
+- Exit codes: 0 valid, 1 violations (or warnings with `--strict`),
+  2 unreadable or not an agent card
+
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
 field that was never in the spec at any version, so spec-conformant

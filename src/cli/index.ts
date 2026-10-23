@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import {
   initCommand,
   cardCommand,
+  validateCommand,
   feedCommand,
   startCommand,
   stopCommand,
@@ -38,6 +39,7 @@ const program = new Command()
 
 program.addCommand(initCommand);
 program.addCommand(cardCommand);
+program.addCommand(validateCommand);
 
 // Register feed, start, stop as real commands
 feedCommand(program);

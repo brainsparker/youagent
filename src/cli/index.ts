@@ -20,6 +20,7 @@ import {
   deregisterCommand,
   pushCommand,
   keyCommand,
+  mcpCommand,
 } from './commands/index.js';
 
 // Resolve the version from package.json at runtime so the CLI can never
@@ -60,5 +61,8 @@ registerCommand(program);
 deregisterCommand(program);
 pushCommand(program);
 keyCommand(program);
+
+// Register the MCP server command
+mcpCommand(program);
 
 program.parse();

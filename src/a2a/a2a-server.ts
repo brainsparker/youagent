@@ -19,6 +19,16 @@ import {
   getAgentUrl,
 } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
+import {
+  authenticate,
+  challengeHeader,
+  extractCredential,
+  resolveAuth,
+  withDeclaredSecurity,
+  type A2AAuthContext,
+  type A2AAuthOptions,
+  type ResolvedAuth,
+} from './auth.js';
 import { normalizeMessage } from './compat.js';
 import {
   ATOM_CONTENT_TYPE,
@@ -110,6 +120,23 @@ export interface A2AServerConfig {
   /** Port to listen on. Defaults to 3141. Pass 0 to pick a free port. */
   port?: number;
   /**
+   * Interface to bind. Defaults to every interface (Node's `listen` default),
+   * which is what a public agent behind a reverse proxy wants. Pass
+   * `'127.0.0.1'` for an agent that only local processes should reach, or
+   * combine a public bind with `auth`.
+   */
+  host?: string;
+  /**
+   * Require callers to authenticate. When set, `POST /` (every JSON-RPC
+   * method) answers HTTP 401 with a `WWW-Authenticate` challenge unless the
+   * request carries an accepted bearer token or API key, and the served card
+   * declares the accepted schemes in `securitySchemes` and
+   * `securityRequirements`. Card discovery and `/health` stay public.
+   * Omit to run an open server (fine on a trusted network, not on the
+   * public internet).
+   */
+  auth?: A2AAuthOptions;
+  /**
    * The agent card to serve at GET /.well-known/agent-card.json (A2A v1.0)
    * and, for pre-1.0 clients, at /.well-known/agent.json and /agent-card.
    */
@@ -172,15 +199,37 @@ export class A2AServer {
   private pushConfigs = new Map<string, Map<string, PushNotificationConfig>>();
   private pendingDeliveries = new Set<Promise<void>>();
   private readonly port: number;
+  private readonly host: string | undefined;
   private readonly cardMaxAgeSeconds: number;
   private readonly pushOptions: PushNotificationOptions;
+  private readonly auth: ResolvedAuth | undefined;
+  /** The card as served: the configured card plus any declared auth schemes. */
+  private readonly servedCard: AgentCard;
 
   constructor(private config: A2AServerConfig) {
     this.port = config.port ?? DEFAULT_PORT;
+    this.host = config.host;
     this.cardMaxAgeSeconds = Math.max(0, Math.floor(config.cardMaxAgeSeconds ?? DEFAULT_CARD_MAX_AGE_SECONDS));
     this.pushOptions = config.pushNotifications ?? {};
+    this.auth = config.auth ? resolveAuth(config.auth) : undefined;
+    this.servedCard = this.auth ? withDeclaredSecurity(config.agentCard, this.auth) : config.agentCard;
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.registerTaskHandlers();
+  }
+
+  /**
+   * The agent card as clients see it at the discovery paths. With `auth`
+   * configured this is the configured card plus the `securitySchemes` and
+   * `securityRequirements` the server enforces; otherwise it is the
+   * configured card itself.
+   */
+  get agentCard(): AgentCard {
+    return this.servedCard;
+  }
+
+  /** Whether callers must authenticate to reach the JSON-RPC endpoint. */
+  get authRequired(): boolean {
+    return this.auth !== undefined;
   }
 
   /** Register a handler for an A2A method (e.g., 'message/send'). Overrides defaults. */
@@ -338,10 +387,15 @@ export class A2AServer {
   async start(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.server.once('error', reject);
-      this.server.listen(this.port, () => {
+      const onListening = () => {
         this.server.removeListener('error', reject);
         resolve();
-      });
+      };
+      if (this.host === undefined) {
+        this.server.listen(this.port, onListening);
+      } else {
+        this.server.listen(this.port, this.host, onListening);
+      }
     });
   }
 
@@ -699,17 +753,53 @@ export class A2AServer {
       this.config.feed &&
       (pathname === ATOM_FEED_PATH || pathname === JSON_FEED_PATH)
     ) {
+      if (this.auth?.protectFeeds && !(await this.authorize(req, res))) return;
       await this.handleFeed(res, new URL(req.url ?? '/', 'http://localhost'));
       return;
     }
 
     // POST / : JSON-RPC 2.0 dispatcher
     if (method === 'POST' && pathname === '/') {
-      await this.handleJsonRpc(req, res);
+      let authContext: A2AAuthContext | undefined;
+      if (this.auth) {
+        authContext = await this.authorize(req, res);
+        if (!authContext) return;
+      }
+      await this.handleJsonRpc(req, res, authContext);
       return;
     }
 
     this.sendJson(res, 404, { error: 'not found' });
+  }
+
+  /**
+   * Enforce `auth` on a request. Returns the auth context when the caller
+   * presented an accepted credential; otherwise writes the 401 response
+   * (HTTP-level, per A2A spec section 3.2, never a JSON-RPC error) and
+   * returns undefined so the caller stops processing.
+   */
+  private async authorize(req: IncomingMessage, res: ServerResponse): Promise<A2AAuthContext | undefined> {
+    const auth = this.auth!;
+    const credential = extractCredential(req, auth.apiKeyHeader);
+    const context = credential ? await authenticate(credential, auth, req) : undefined;
+    if (context) return context;
+
+    const realm = auth.realm ?? this.config.agentCard.name;
+    const body = JSON.stringify({
+      error: 'unauthorized',
+      message: credential
+        ? 'The presented credential was not accepted'
+        : 'This agent requires authentication; see securitySchemes on its agent card',
+      securitySchemes: Object.keys(this.servedCard.securitySchemes ?? {}),
+    });
+    res.writeHead(401, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      'WWW-Authenticate': challengeHeader(auth, realm),
+      'Cache-Control': 'no-store',
+    });
+    res.end(body);
+    return undefined;
   }
 
   private async handleFeed(res: ServerResponse, parsed: URL): Promise<void> {
@@ -778,7 +868,7 @@ export class A2AServer {
    * paths keep `application/json` for clients that predate the media type.
    */
   private sendAgentCard(req: IncomingMessage, res: ServerResponse, v1Path: boolean): void {
-    const body = JSON.stringify(this.config.agentCard);
+    const body = JSON.stringify(this.servedCard);
     const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 32)}"`;
     const headers: Record<string, string> = {
       'Content-Type': v1Path ? A2A_CARD_MEDIA_TYPE : 'application/json',
@@ -813,7 +903,11 @@ export class A2AServer {
     });
   }
 
-  private async handleJsonRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleJsonRpc(
+    req: IncomingMessage,
+    res: ServerResponse,
+    authContext?: A2AAuthContext,
+  ): Promise<void> {
     let body: string;
     try {
       body = await this.readBody(req);
@@ -861,6 +955,8 @@ export class A2AServer {
       this.sendJsonRpcError(res, request.id, METHOD_NOT_FOUND, `Method not found: ${request.method}`);
       return;
     }
+
+    if (authContext) request.auth = authContext;
 
     try {
       const result = await handler(request.params, request);

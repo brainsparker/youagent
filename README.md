@@ -186,7 +186,40 @@ The `A2AServer` speaks JSON-RPC 2.0 over HTTP:
 - Message parts use the spec `kind` discriminator (`text` / `file` / `data`); messages and tasks carry their `kind` object discriminator and artifacts carry an `artifactId`. Peers that still send the pre-0.2 youagent `type` discriminator are normalized on ingest, so older agents keep working
 - `GET /feed.xml` and `GET /feed.json` (optional) — the agent's posts as an Atom 1.0 feed and a JSON Feed 1.1 document, see below
 
-Default port: `3141`. Pass `port: 0` to let the OS choose and read it back from `server.address()`.
+Default port: `3141`. Pass `port: 0` to let the OS choose and read it back from `server.address()`. Pass `host: '127.0.0.1'` to bind only the loopback interface; by default the server listens on every interface.
+
+### Authentication
+
+An A2A endpoint reachable from the internet accepts `message/send` from anyone unless it checks credentials, and every task it holds is readable through `tasks/get` and `tasks/list`. Turn on `auth` to require one:
+
+```ts
+const server = new A2AServer({
+  agentCard: card,
+  auth: {
+    bearerTokens: [process.env.YOUAGENT_A2A_TOKEN!],   // Authorization: Bearer <token>
+    apiKeys: ['key-for-the-dashboard'],                // X-API-Key: <key> (apiKeyHeader renames it)
+  },
+});
+```
+
+- Every `POST /` request must present an accepted bearer token or API key. Otherwise the server answers HTTP `401` with a `WWW-Authenticate` challenge and a small JSON body, at the HTTP layer rather than as a JSON-RPC error, which is what the A2A spec asks for (section 3.2).
+- The served card declares what the server enforces: `securitySchemes` gains `bearer` (`httpAuthSecurityScheme`) and/or `apiKey` (`apiKeySecurityScheme`) and `securityRequirements` lists them as alternatives, so any A2A client can read the card and know what to send. The card object you pass in is not modified; `server.agentCard` is the served version.
+- Card discovery (`/.well-known/agent-card.json`, `/.well-known/agent.json`, `/agent-card`) and `/health` stay public, since clients need the card to learn the schemes. The syndication feeds stay public too unless you set `protectFeeds: true`.
+- Credentials are compared in constant time. Handlers receive the outcome as `request.auth` (`{ scheme, principal? }`).
+- For anything beyond static secrets (JWTs, per-agent tokens in a database, mTLS headers from a reverse proxy), pass `verify(credential, req)`: it runs after the static lists miss and returns `true`, `{ principal }`, or `false`.
+- A configuration that could authenticate nobody (`auth: {}`) throws at construction instead of silently running open.
+
+On the client side, `A2AClient` takes the credentials to present:
+
+```ts
+const client = new A2AClient(myCard, {
+  credentials: { bearerToken: process.env.PEER_TOKEN },
+  // Or per agent, when each peer issued its own:
+  credentialsFor: (agentUrl) => tokensByAgent.get(agentUrl),
+});
+```
+
+A `401` or `403` from the remote agent throws `A2AAuthenticationError` (with `status`, `agentUrl`, and the server's `challenge`) immediately, without the retry that other transport errors get.
 
 ### Task lifecycle
 
@@ -273,7 +306,7 @@ Honest list of what is not production-grade yet — each is a scoped, contributi
 - **A2A signed cards**: `signatures` are accepted and preserved on cards but not produced or verified.
 - **A2A streaming**: `message/stream` and `tasks/resubscribe` are declared in the types but not implemented (no SSE).
 - **A2A task persistence**: tasks and push notification configs are held in memory and lost on restart.
-- **A2A auth**: the server does not enforce the security schemes the card can declare.
+- **A2A auth beyond bearer and API keys**: `A2AServer` enforces bearer tokens and API keys and can defer to a `verify` hook, but does not itself validate OAuth 2.0 or OpenID Connect credentials against the flows a card can declare.
 - **Email digests**: formatted but never sent — no transport is wired.
 - **Schema migrations**: SQLite schema evolves via idempotent DDL, not versioned migrations.
 

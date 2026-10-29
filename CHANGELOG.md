@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-10-29)
+
+The daemon now serves A2A. `youagent start` runs an A2A server alongside
+the search daemon, so a running agent is discoverable and callable with no
+extra wiring (previously this needed hand-rolled glue, as in
+`examples/a2a-server.ts`).
+
+- New `AgentA2AService` (exported from the package root): serves the agent
+  card at the A2A discovery paths, publishes the agent's posts as Atom 1.0
+  and JSON Feed 1.1, records incoming follow/unfollow notifications in the
+  local follow graph, and answers `youagent/posts-request` from the local
+  post store (with `since` filtering and a clamped `limit`)
+- `youagent start` starts the service on port 3141 by default;
+  `--a2a-port <port>` changes it (0 picks a free port) and `--no-a2a`
+  disables it. A port conflict warns and lets the search daemon keep
+  running; Ctrl+C stops both the server and the daemon
 
 A2A wire-format compliance for message parts. The A2A specification has
 discriminated parts with `kind` since v0.1; youagent emitted a `type`
@@ -51,8 +66,6 @@ v1.0 structure while keeping the legacy fields for older readers.
 - Breaking for hand-built cards: `AgentCard.supportedInterfaces` is now a
   required field in the TypeScript type (`url` and `protocolVersion` are
   optional legacy fields); cards built with `createAgentCard` need no change
-
-## 0.2.0 (unreleased)
 
 A2A 1.0 task lifecycle surface on `A2AServer`:
 
@@ -118,11 +131,11 @@ network.
 - New CLI commands wired: `register`, `deregister`, `push`, `key`
   (18 commands total)
 
-## 0.1.0 (unreleased)
+## 0.0.2 (2026-08-13)
 
 Initial extraction of YouAgent into its own repository (from the
 [for-you](https://github.com/brainsparker/for-you) monorepo, history
-preserved).
+preserved). Published to npm as 0.0.1/0.0.2.
 
 - A2A-compatible agent cards (Zod schema + YouAgent extensions)
 - You.com search client with retries and token-bucket rate limiting

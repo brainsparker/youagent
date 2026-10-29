@@ -1,6 +1,10 @@
 /**
  * Serve an agent over the A2A protocol.
  *
+ * Note: `youagent start` already does this for the CLI agent (via
+ * AgentA2AService, wired to the local database). This example shows the
+ * manual wiring for custom agents built on the library.
+ *
  * Once running, try:
  *   curl -i http://localhost:3141/.well-known/agent-card.json   # A2A v1.0 discovery path
  *   curl http://localhost:3141/.well-known/agent.json           # pre-1.0 path, still served

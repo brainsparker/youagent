@@ -7,13 +7,19 @@
  * a non-standard `type` discriminator on parts and omitted the object
  * discriminators entirely.
  *
+ * A2A v1.0 dropped the discriminators again: a `Part` is a oneof over
+ * `text` / `raw` / `url` / `data`, roles are `ROLE_USER` / `ROLE_AGENT` and
+ * task states are `TASK_STATE_*` (see `./version.ts`). The normalizers accept
+ * that shape too, so a v1.0 peer's message lands in the same internal form.
+ *
  * These normalizers are applied at every ingest boundary (server request
  * handling, client responses) so youagent speaks spec-shaped A2A on the way
- * out while remaining liberal in what it accepts from older peers.
+ * out while remaining liberal in what it accepts from older and newer peers.
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import type { Artifact, DataPart, FilePart, Message, Part, Task, TextPart } from './types.js';
+import type { Artifact, DataPart, FilePart, Message, Part, Task, TaskState, TextPart } from './types.js';
+import { fromV1Part, fromV1Role, fromV1TaskState } from './version.js';
 
 /**
  * Normalize a single part from the wire into a spec-shaped `Part`.
@@ -26,7 +32,8 @@ export function normalizePart(part: unknown): Part {
   if (part === null || typeof part !== 'object') {
     throw new Error('Invalid A2A part: expected an object');
   }
-  const raw = part as Record<string, unknown>;
+  // A v1.0 oneof part has no discriminator; derive one from its content field.
+  const raw = fromV1Part(part as Record<string, unknown>) ?? (part as Record<string, unknown>);
   const discriminator = (raw.kind ?? raw.type) as string | undefined;
   const metadata = raw.metadata as Record<string, unknown> | undefined;
 
@@ -74,11 +81,15 @@ export function normalizeMessage(message: unknown): Message {
     throw new Error('Invalid A2A message: expected an object');
   }
   const raw = message as Record<string, unknown>;
-  return {
+  const normalized: Message = {
     ...(raw as unknown as Message),
     kind: 'message',
     parts: normalizeParts(raw.parts ?? []),
   };
+  if (typeof raw.role === 'string') {
+    normalized.role = fromV1Role(raw.role) as Message['role'];
+  }
+  return normalized;
 }
 
 /** Normalize an artifact from the wire: ensure `artifactId` and spec-shaped parts. */
@@ -111,11 +122,14 @@ export function normalizeTask(task: unknown): Task {
   };
 
   const status = raw.status as Record<string, unknown> | undefined;
-  if (status && status.message) {
-    normalized.status = {
-      ...(status as unknown as Task['status']),
-      message: normalizeMessage(status.message),
-    };
+  if (status) {
+    normalized.status = { ...(status as unknown as Task['status']) };
+    if (typeof status.state === 'string') {
+      normalized.status.state = fromV1TaskState(status.state) as TaskState;
+    }
+    if (status.message) {
+      normalized.status.message = normalizeMessage(status.message);
+    }
   }
   if (Array.isArray(raw.history)) {
     normalized.history = raw.history.map(normalizeMessage);

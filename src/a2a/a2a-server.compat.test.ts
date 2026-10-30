@@ -101,10 +101,22 @@ describe('A2A wire-format compatibility on the server', () => {
     });
   });
 
-  it('rejects a part with no discriminator as invalid params', async () => {
+  it('accepts a v1.0 oneof part with no discriminator and stores it as a kind part', async () => {
     await withServer(async (rpc) => {
       const res = await rpc('message/send', {
-        message: { role: 'user', messageId: 'm4', parts: [{ text: 'no discriminator' }] },
+        message: { role: 'ROLE_USER', messageId: 'm4', parts: [{ text: 'oneof text' }] },
+      });
+      expect(res.error).toBeUndefined();
+      const task = res.result as { history: Array<{ role: string; parts: unknown[] }> };
+      expect(task.history[0].role).toBe('user');
+      expect(task.history[0].parts).toEqual([{ kind: 'text', text: 'oneof text' }]);
+    });
+  });
+
+  it('rejects a part with neither a discriminator nor a content field as invalid params', async () => {
+    await withServer(async (rpc) => {
+      const res = await rpc('message/send', {
+        message: { role: 'user', messageId: 'm5', parts: [{ metadata: { note: 'empty' } }] },
       });
       expect(res.error?.code).toBe(-32602);
       expect(res.error?.message).toMatch(/unknown kind/);

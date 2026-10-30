@@ -1,5 +1,12 @@
 /**
  * A2A client — JSON-RPC 2.0 based agent-to-agent communication.
+ *
+ * Every request carries the `A2A-Version` service parameter (spec 3.6.1).
+ * By default the client speaks the 0.3 dialect youagent stores natively;
+ * pass `{ protocolVersion: '1.0' }` to talk to servers that only serve the
+ * v1.0 wire format (PascalCase methods, `ROLE_*`, oneof parts, wrapped
+ * `SendMessage` results). Responses in either dialect are normalized to the
+ * internal shape on ingest.
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -8,9 +15,20 @@ import { isYouAgent, getAgentIdentifier } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import { normalizeTask } from './compat.js';
 import { fetchAgentCard } from './discovery.js';
-import type {
-  JsonRpcRequest,
-  JsonRpcResponse,
+import {
+  A2A_DEFAULT_PROTOCOL_VERSION,
+  A2A_VERSION_HEADER,
+  fromV1PushConfig,
+  fromV1PushConfigList,
+  fromV1SendMessageResult,
+  toV1Message,
+  toV1PushParams,
+  type A2AProtocolVersion,
+} from './version.js';
+import {
+  A2A_V1_METHOD_ALIASES,
+  type JsonRpcRequest,
+  type JsonRpcResponse,
   Message,
   Task,
   Part,
@@ -34,9 +52,31 @@ import type {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** 0.3 method name to the 1.0 PascalCase name sent when speaking 1.0. */
+const V1_METHOD_NAMES: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(A2A_V1_METHOD_ALIASES).map(([v1, legacy]) => [legacy, v1]),
+);
+
+/** Options for `A2AClient`. */
+export interface A2AClientOptions {
+  /**
+   * Wire dialect to speak: `0.3` (default) or `1.0`. Set `1.0` for servers
+   * that only implement the v1.0 serialization, such as stock `@a2a-js/sdk`
+   * 1.x without legacy compatibility enabled.
+   */
+  protocolVersion?: A2AProtocolVersion;
+}
+
 /** JSON-RPC 2.0 client for the A2A protocol. */
 export class A2AClient {
-  constructor(private senderCard: AgentCard) {}
+  readonly protocolVersion: A2AProtocolVersion;
+
+  constructor(
+    private senderCard: AgentCard,
+    options: A2AClientOptions = {},
+  ) {
+    this.protocolVersion = options.protocolVersion ?? A2A_DEFAULT_PROTOCOL_VERSION;
+  }
 
   // ── A2A standard methods ──────────────────────────────────────────────
 
@@ -50,7 +90,8 @@ export class A2AClient {
       throw new Error(`message/send failed: ${response.error.message}`);
     }
 
-    return normalizeTask(response.result);
+    // 1.0 wraps the result as SendMessageResponse ({ task } | { message }).
+    return normalizeTask(fromV1SendMessageResult(response.result));
   }
 
   /** Get a task by ID from a remote agent. */
@@ -79,7 +120,8 @@ export class A2AClient {
 
   /** List tasks on a remote agent (newest first) with optional filters and paging. */
   async listTasks(agentUrl: string, params: ListTasksParams = {}): Promise<ListTasksResult> {
-    return this.call<ListTasksResult>(agentUrl, 'tasks/list', params);
+    const result = await this.call<ListTasksResult>(agentUrl, 'tasks/list', params);
+    return { ...result, tasks: (result.tasks ?? []).map(normalizeTask) };
   }
 
   /** Register a webhook that receives updates for a task. Returns the stored config with its id. */
@@ -89,7 +131,8 @@ export class A2AClient {
     config: PushNotificationConfig,
   ): Promise<TaskPushNotificationConfig> {
     const params: TaskPushNotificationConfig = { taskId, pushNotificationConfig: config };
-    return this.call<TaskPushNotificationConfig>(agentUrl, 'tasks/pushNotificationConfig/set', params);
+    const result = await this.call<unknown>(agentUrl, 'tasks/pushNotificationConfig/set', params);
+    return fromV1PushConfig(result);
   }
 
   /** Fetch a task's push notification config (the first one when configId is omitted). */
@@ -99,13 +142,15 @@ export class A2AClient {
     configId?: string,
   ): Promise<TaskPushNotificationConfig> {
     const params: GetTaskPushNotificationConfigParams = { id: taskId, pushNotificationConfigId: configId };
-    return this.call<TaskPushNotificationConfig>(agentUrl, 'tasks/pushNotificationConfig/get', params);
+    const result = await this.call<unknown>(agentUrl, 'tasks/pushNotificationConfig/get', params);
+    return fromV1PushConfig(result);
   }
 
   /** List every push notification config registered for a task. */
   async listPushNotificationConfigs(agentUrl: string, taskId: string): Promise<TaskPushNotificationConfig[]> {
     const params: ListTaskPushNotificationConfigParams = { id: taskId };
-    return this.call<TaskPushNotificationConfig[]>(agentUrl, 'tasks/pushNotificationConfig/list', params);
+    const result = await this.call<unknown>(agentUrl, 'tasks/pushNotificationConfig/list', params);
+    return fromV1PushConfigList(result);
   }
 
   /** Remove a push notification config from a task. */
@@ -222,6 +267,7 @@ export class A2AClient {
 
   private async rpc(agentUrl: string, method: string, params: unknown): Promise<JsonRpcResponse> {
     const request = this.buildJsonRpc(method, params);
+    const headers = { 'Content-Type': 'application/json', [A2A_VERSION_HEADER]: this.protocolVersion };
     let lastError: unknown;
 
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -232,7 +278,7 @@ export class A2AClient {
         try {
           const res = await fetch(agentUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify(request),
             signal: controller.signal,
           });
@@ -268,12 +314,25 @@ export class A2AClient {
     };
   }
 
+  /**
+   * Build the JSON-RPC envelope in the client's dialect. In 1.0 the method
+   * takes its PascalCase name and an outgoing message is projected onto the
+   * v1.0 shape (`ROLE_USER`, oneof parts, no `kind`).
+   */
   private buildJsonRpc(method: string, params: unknown): JsonRpcRequest {
+    if (this.protocolVersion !== '1.0') {
+      return { jsonrpc: '2.0', id: uuidv4(), method, params };
+    }
+    let v1Params = toV1PushParams(method, params);
+    if (method === 'message/send' && params && typeof params === 'object') {
+      const { message, ...rest } = params as MessageSendParams;
+      v1Params = { ...rest, message: toV1Message(message) };
+    }
     return {
       jsonrpc: '2.0',
       id: uuidv4(),
-      method,
-      params,
+      method: V1_METHOD_NAMES[method] ?? method,
+      params: v1Params,
     };
   }
 }

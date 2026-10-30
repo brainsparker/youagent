@@ -47,10 +47,29 @@ describe('normalizePart', () => {
     });
   });
 
-  it('throws on unknown or missing discriminators', () => {
-    expect(() => normalizePart({ text: 'hi' })).toThrow(/unknown kind/);
+  it('throws on unknown discriminators and on parts with no content field', () => {
+    expect(() => normalizePart({ metadata: { a: 1 } })).toThrow(/unknown kind/);
     expect(() => normalizePart({ kind: 'audio', text: 'hi' })).toThrow(/unknown kind/);
     expect(() => normalizePart(null)).toThrow(/expected an object/);
+  });
+
+  it('accepts A2A v1.0 oneof parts (no discriminator) and maps them onto kind parts', () => {
+    expect(normalizePart({ text: 'hi' })).toEqual({ kind: 'text', text: 'hi' });
+    expect(normalizePart({ data: { a: 1 }, metadata: { m: true } })).toEqual({
+      kind: 'data',
+      data: { a: 1 },
+      metadata: { m: true },
+    });
+    expect(normalizePart({ url: 'https://x.test/f.pdf', filename: 'f.pdf', mediaType: 'application/pdf' })).toEqual({
+      kind: 'file',
+      file: { uri: 'https://x.test/f.pdf', name: 'f.pdf', mimeType: 'application/pdf' },
+    });
+    expect(normalizePart({ raw: 'aGk=', mediaType: 'text/plain' })).toEqual({
+      kind: 'file',
+      file: { bytes: 'aGk=', mimeType: 'text/plain' },
+    });
+    // A discriminator still wins over the oneof inference.
+    expect(normalizePart({ kind: 'text', text: 'hi', data: { ignored: true } })).toEqual({ kind: 'text', text: 'hi' });
   });
 
   it('throws on structurally invalid parts', () => {

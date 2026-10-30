@@ -42,11 +42,12 @@ describe('A2AServer agent card discovery', () => {
     const body = await res.json();
     expect(body.name).toBe('Climate Watch');
     expect(body.supportedInterfaces).toEqual([
-      { url: 'https://climate.example.com/a2a', protocolBinding: 'JSONRPC', protocolVersion: '0.2.1' },
+      { url: 'https://climate.example.com/a2a', protocolBinding: 'JSONRPC', protocolVersion: '1.0' },
+      { url: 'https://climate.example.com/a2a', protocolBinding: 'JSONRPC', protocolVersion: '0.3' },
     ]);
     // Transitional card: legacy fields stay for pre-1.0 readers.
     expect(body.url).toBe('https://climate.example.com/a2a');
-    expect(body.protocolVersion).toBe('0.2.1');
+    expect(body.protocolVersion).toBe('0.3');
   });
 
   it('keeps serving the pre-1.0 path and the /agent-card alias as application/json', async () => {

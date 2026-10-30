@@ -70,9 +70,9 @@ describe('agentCardSchema (A2A v1.0 structure)', () => {
     expect(card.protocolVersion).toBe('0.2.1');
   });
 
-  it('defaults the synthesized interface protocolVersion when the legacy card has none', () => {
+  it('defaults the synthesized interface protocolVersion to the 0.3 dialect when the legacy card has none', () => {
     const card = agentCardSchema.parse(VALID_CARD);
-    expect(card.supportedInterfaces[0].protocolVersion).toBe('0.2.1');
+    expect(card.supportedInterfaces[0].protocolVersion).toBe('0.3');
     expect(card.protocolVersion).toBeUndefined();
   });
 
@@ -169,11 +169,14 @@ describe('createAgentCard / createExternalAgentCard', () => {
       url: 'https://climate.example.com/a2a',
     });
 
+    // One interface per negotiable dialect at the same URL, newest first;
+    // the legacy top-level field names the dialect a pre-1.0 reader is served.
     expect(card.supportedInterfaces).toEqual([
-      { url: 'https://climate.example.com/a2a', protocolBinding: 'JSONRPC', protocolVersion: '0.2.1' },
+      { url: 'https://climate.example.com/a2a', protocolBinding: 'JSONRPC', protocolVersion: '1.0' },
+      { url: 'https://climate.example.com/a2a', protocolBinding: 'JSONRPC', protocolVersion: '0.3' },
     ]);
     expect(card.url).toBe('https://climate.example.com/a2a');
-    expect(card.protocolVersion).toBe('0.2.1');
+    expect(card.protocolVersion).toBe('0.3');
     expect(card.capabilities.stateTransitionHistory).toBeUndefined();
     expect(card.skills.every((s) => s.tags.length > 0)).toBe(true);
   });
@@ -213,7 +216,7 @@ describe('agent card helpers', () => {
     expect(getPrimaryInterface(legacyOnly)).toEqual({
       url: 'https://climate.example.com',
       protocolBinding: 'JSONRPC',
-      protocolVersion: '0.2.1',
+      protocolVersion: '0.3',
     });
     expect(getAgentIdentifier(legacyOnly).id).toBe('https://climate.example.com');
   });

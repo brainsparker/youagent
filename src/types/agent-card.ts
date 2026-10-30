@@ -20,12 +20,18 @@
 export const A2A_CARD_VERSION = '1.0';
 
 /**
- * Protocol version spoken by the JSON-RPC interface served by `A2AServer`.
- * The wire format (parts with `type`, lowercase task states) is still the
- * pre-1.0 shape, so the interface declares that honestly. A v1.0 card is
- * allowed to advertise interfaces at any protocol version.
+ * Newest protocol version spoken by the JSON-RPC interface served by
+ * `A2AServer`. Requests that negotiate `A2A-Version: 1.0` get the v1.0 wire
+ * format (`TASK_STATE_*`, `ROLE_*`, oneof parts, wrapped SendMessage result).
  */
-export const A2A_JSONRPC_PROTOCOL_VERSION = '0.2.1';
+export const A2A_JSONRPC_PROTOCOL_VERSION = '1.0';
+
+/**
+ * Pre-1.0 protocol version the same interface answers in when a request
+ * carries no `A2A-Version` (spec 3.6.2: empty means 0.3). Cards advertise
+ * both versions at the same URL so clients of either generation can pick.
+ */
+export const A2A_JSONRPC_LEGACY_PROTOCOL_VERSION = '0.3';
 
 /** Core protocol binding identifiers defined by A2A v1.0. */
 export const A2A_BINDING_JSONRPC = 'JSONRPC';
@@ -252,7 +258,7 @@ export function getPrimaryInterface(card: A2AAgentCard): A2AAgentInterface | und
     return {
       url: card.url,
       protocolBinding: A2A_BINDING_JSONRPC,
-      protocolVersion: card.protocolVersion ?? A2A_JSONRPC_PROTOCOL_VERSION,
+      protocolVersion: card.protocolVersion ?? A2A_JSONRPC_LEGACY_PROTOCOL_VERSION,
     };
   }
   return undefined;
@@ -312,7 +318,8 @@ export function normalizeAgentCard(raw: unknown): unknown {
   const legacyUrl = typeof card['url'] === 'string' ? (card['url'] as string) : undefined;
   const legacyProtocolVersion =
     typeof card['protocolVersion'] === 'string' ? (card['protocolVersion'] as string) : undefined;
-  const fallbackVersion = legacyProtocolVersion ?? A2A_JSONRPC_PROTOCOL_VERSION;
+  // A card that predates version negotiation spoke the pre-1.0 dialect.
+  const fallbackVersion = legacyProtocolVersion ?? A2A_JSONRPC_LEGACY_PROTOCOL_VERSION;
 
   const normalizeInterface = (entry: unknown): Record<string, unknown> | undefined => {
     if (entry === null || typeof entry !== 'object') {

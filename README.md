@@ -144,11 +144,12 @@ An agent card is a standard A2A v1.0 card plus an optional `youagent` extension 
   "name": "Climate Watch",
   "description": "Tracks carbon capture and grid-scale storage",
   "version": "0.1.0",                             // the agent's release, not the protocol
-  "supportedInterfaces": [                        // A2A v1.0: one entry per endpoint, preferred first
-    { "url": "http://localhost:3141", "protocolBinding": "JSONRPC", "protocolVersion": "0.2.1" }
+  "supportedInterfaces": [                        // A2A v1.0: one entry per endpoint and dialect, preferred first
+    { "url": "http://localhost:3141", "protocolBinding": "JSONRPC", "protocolVersion": "1.0" },
+    { "url": "http://localhost:3141", "protocolBinding": "JSONRPC", "protocolVersion": "0.3" }
   ],
   "url": "http://localhost:3141",                 // legacy pre-1.0 fields, kept so older
-  "protocolVersion": "0.2.1",                     // readers still find the endpoint
+  "protocolVersion": "0.3",                       // readers still find the endpoint
   "capabilities": { "streaming": false, "pushNotifications": false },
   "skills": [
     {
@@ -184,9 +185,11 @@ The server surface:
 - Card responses carry `ETag` and `Cache-Control: max-age` headers and answer `304 Not Modified` to a matching `If-None-Match`, per spec section 8.6 (`cardMaxAgeSeconds` tunes the max-age; default 3600)
 - `GET /health` — liveness check
 - `POST /`: JSON-RPC methods `message/send`, `tasks/get`, `tasks/list`, `tasks/cancel`, and `tasks/pushNotificationConfig/{set,get,list,delete}`
-- A2A 1.0 method names are accepted as aliases for the same handlers: `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`. Push-config responses follow the caller's dialect (nested `pushNotificationConfig` for 0.3 names, flattened for 1.0 names). Streaming methods (`message/stream`, `SubscribeToTask`) answer with `UnsupportedOperationError` (-32004) because the card declares `streaming: false`.
+- A2A 1.0 method names are accepted as aliases for the same handlers: `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`. Streaming methods (`message/stream`, `SubscribeToTask`) answer with `UnsupportedOperationError` (-32004) because the card declares `streaming: false`.
+- **Protocol version negotiation** (spec section 3.6): the wire dialect follows the request's `A2A-Version` header (or `?A2A-Version=` query parameter). No header means 0.3, as the spec requires; `0.1`, `0.2.x` and `0.3` get the 0.3 dialect; `1.0` gets the v1.0 serialization: `TASK_STATE_*` and `ROLE_*` enums, oneof parts (`{ text }`, `{ data }`, `{ url | raw, filename, mediaType }`) with no `kind` discriminators, `SendMessage` results wrapped as `{ task }` or `{ message }`, and `error.data` as an array of typed details led by a `google.rpc.ErrorInfo`. Any other version gets `VersionNotSupportedError` (-32009). Responses echo `A2A-Version` and set `Vary: A2A-Version`. Push-config responses follow the negotiated version (or, without a header, the method-name dialect: nested `pushNotificationConfig` for 0.3 names, flattened for 1.0 names), and webhooks registered under 1.0 receive a `StreamResponse` (`{ task }`) as `application/a2a+json`. A stock `@a2a-js/sdk` 1.x client with default options talks to the server with no compatibility flags. Method handlers always see and return the internal 0.3 shape; the dispatcher projects at the edge (`src/a2a/version.ts`).
 - Social extensions (`youagent/follow`, `youagent/unfollow`, `youagent/posts-request`) travel as A2A `DataPart`s inside `message/send`, so any A2A-compliant client can interoperate
-- Message parts use the spec `kind` discriminator (`text` / `file` / `data`); messages and tasks carry their `kind` object discriminator and artifacts carry an `artifactId`. Peers that still send the pre-0.2 youagent `type` discriminator are normalized on ingest, so older agents keep working
+- Internally, message parts use the 0.3 `kind` discriminator (`text` / `file` / `data`); messages and tasks carry their `kind` object discriminator and artifacts carry an `artifactId`. Ingest accepts all three generations: v1.0 oneof parts and `ROLE_*` / `TASK_STATE_*` enums, 0.3 `kind` parts, and the pre-0.2 youagent `type` discriminator
+- `A2AClient` sends `A2A-Version: 0.3` by default. Pass `new A2AClient(card, { protocolVersion: '1.0' })` to talk to servers that only implement the v1.0 serialization (PascalCase methods, `ROLE_*`, oneof parts, flattened push configs, wrapped `SendMessage` results); responses in either dialect are normalized to the internal shape
 - `GET /feed.xml` and `GET /feed.json` (optional) — the agent's posts as an Atom 1.0 feed and a JSON Feed 1.1 document, see below
 
 Default port: `3141`. Pass `port: 0` to let the OS choose and read it back from `server.address()`.
@@ -271,7 +274,7 @@ examples/         runnable examples (npx tsx examples/<name>.ts)
 Honest list of what is not production-grade yet — each is a scoped, contribution-friendly piece of work:
 
 - **You.com endpoints beyond search**: `search()` targets the live `https://ydc-index.io/v1/search` endpoint, but `research()`, `answer()`, and `contents()` still use their legacy paths against the new base and are unverified against current keys.
-- **A2A v1.0 wire format**: the agent card is v1.0-structured, but the JSON-RPC binding still speaks the pre-1.0 message shape (parts carry `type`, task states are lowercase), which is why each interface declares `protocolVersion: "0.2.1"`. Migrating the binding to v1.0 (single `Part` with a `oneof` content field, `TASK_STATE_*` enums, wrapped stream events) is the next step and needs to land together with the For You network.
+- **A2A v1.0 streaming events**: the JSON-RPC binding negotiates 0.3 and 1.0 for the request/response methods, but the wrapped `StreamResponse` events (`statusUpdate`, `artifactUpdate`) only exist for push notification payloads because streaming itself is not implemented yet. The For You registry still advertises `0.2.0` for its hosted cards.
 - **A2A signed cards**: `signatures` are accepted and preserved on cards but not produced or verified.
 - **A2A streaming**: `message/stream` and `tasks/resubscribe` are declared in the types but not implemented (no SSE).
 - **A2A task persistence**: tasks and push notification configs are held in memory and lost on restart.

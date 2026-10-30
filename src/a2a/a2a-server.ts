@@ -4,6 +4,10 @@
  * Implements the A2A task lifecycle surface: message/send, tasks/get,
  * tasks/list, tasks/cancel and the four tasks/pushNotificationConfig methods,
  * reachable under both the 0.3 method names and the 1.0 PascalCase aliases.
+ *
+ * The wire dialect follows the request's `A2A-Version` service parameter
+ * (spec 3.6): `1.0` gets the v1.0 JSON serialization, an empty header gets
+ * 0.3, and anything else gets `VersionNotSupportedError`. See `./version.ts`.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -20,6 +24,18 @@ import {
 } from '../types/agent-card.js';
 import type { Post } from '../types/post.js';
 import { normalizeMessage } from './compat.js';
+import {
+  A2A_SUPPORTED_PROTOCOL_VERSIONS,
+  A2A_VERSION_HEADER,
+  ERROR_INFO_DOMAIN,
+  ERROR_INFO_TYPE,
+  UnsupportedProtocolVersionError,
+  resolveProtocolVersion,
+  toV1Error,
+  toV1Result,
+  toV1Task,
+  type A2AProtocolVersion,
+} from './version.js';
 import {
   ATOM_CONTENT_TYPE,
   DEFAULT_FEED_LIMIT,
@@ -56,8 +72,21 @@ import {
   type YouAgentPostsResponseData,
 } from './types.js';
 
-/** Handler function for an A2A JSON-RPC method. */
-export type A2AMethodHandler = (params: unknown, request: JsonRpcRequest) => Promise<unknown>;
+/** Per-request context passed to method handlers. */
+export interface A2AMethodContext {
+  /** The dialect negotiated from the request's `A2A-Version` (0.3 when absent). */
+  protocolVersion: A2AProtocolVersion;
+}
+
+/**
+ * Handler function for an A2A JSON-RPC method. Handlers return the 0.3
+ * (internal) shape; the dispatcher projects it onto the negotiated dialect.
+ */
+export type A2AMethodHandler = (
+  params: unknown,
+  request: JsonRpcRequest,
+  context: A2AMethodContext,
+) => Promise<unknown>;
 
 /**
  * Syndication feed configuration. When present, the server also answers
@@ -151,7 +180,11 @@ const {
   TASK_NOT_CANCELABLE,
   PUSH_NOTIFICATION_NOT_SUPPORTED,
   UNSUPPORTED_OPERATION,
+  VERSION_NOT_SUPPORTED,
 } = A2A_ERROR_CODES;
+
+/** Media type for v1.0 push notification payloads (spec 4.3.3). */
+const A2A_JSON_MEDIA_TYPE = 'application/a2a+json';
 
 const STREAMING_METHODS: ReadonlySet<string> = new Set(['message/stream', 'tasks/resubscribe']);
 
@@ -170,6 +203,8 @@ export class A2AServer {
   private nextSeq = 1;
   /** taskId -> configId -> config */
   private pushConfigs = new Map<string, Map<string, PushNotificationConfig>>();
+  /** Dialect each webhook was registered under; its payloads use the same one. */
+  private pushConfigVersions = new WeakMap<PushNotificationConfig, A2AProtocolVersion>();
   private pendingDeliveries = new Set<Promise<void>>();
   private readonly port: number;
   private readonly cardMaxAgeSeconds: number;
@@ -281,7 +316,7 @@ export class A2AServer {
       return this.setTaskStatus(id, 'canceled');
     });
 
-    this.onMethod('tasks/pushNotificationConfig/set', async (params: unknown, request) => {
+    this.onMethod('tasks/pushNotificationConfig/set', async (params: unknown, request, context) => {
       this.assertPushSupported();
       const { taskId, config } = this.parseSetPushParams(params);
       this.requireTask(taskId);
@@ -293,10 +328,11 @@ export class A2AServer {
         this.pushConfigs.set(taskId, byId);
       }
       byId.set(stored.id as string, stored);
-      return this.shapePushConfig({ taskId, pushNotificationConfig: stored }, request.method);
+      this.pushConfigVersions.set(stored, context.protocolVersion);
+      return this.shapePushConfig({ taskId, pushNotificationConfig: stored }, request.method, context);
     });
 
-    this.onMethod('tasks/pushNotificationConfig/get', async (params: unknown, request) => {
+    this.onMethod('tasks/pushNotificationConfig/get', async (params: unknown, request, context) => {
       this.assertPushSupported();
       const { taskId, configId } = this.parsePushRefParams(params, false);
       this.requireTask(taskId);
@@ -305,21 +341,21 @@ export class A2AServer {
       if (!config) {
         throw rpcError(TASK_NOT_FOUND, `Push notification config not found for task ${taskId}`);
       }
-      return this.shapePushConfig({ taskId, pushNotificationConfig: config }, request.method);
+      return this.shapePushConfig({ taskId, pushNotificationConfig: config }, request.method, context);
     });
 
-    this.onMethod('tasks/pushNotificationConfig/list', async (params: unknown, request) => {
+    this.onMethod('tasks/pushNotificationConfig/list', async (params: unknown, request, context) => {
       this.assertPushSupported();
       const { taskId } = this.parsePushRefParams(params, false);
       this.requireTask(taskId);
       const configs = [...(this.pushConfigs.get(taskId)?.values() ?? [])].map((c) =>
-        this.shapePushConfig({ taskId, pushNotificationConfig: c }, request.method),
+        this.shapePushConfig({ taskId, pushNotificationConfig: c }, request.method, context),
       );
       // 1.0 wraps the list; 0.3 returns the bare array.
-      return isV1Method(request.method) ? { configs, nextPageToken: '' } : configs;
+      return isV1Dialect(request.method, context) ? { configs, nextPageToken: '' } : configs;
     });
 
-    this.onMethod('tasks/pushNotificationConfig/delete', async (params: unknown, request) => {
+    this.onMethod('tasks/pushNotificationConfig/delete', async (params: unknown, request, context) => {
       this.assertPushSupported();
       const { taskId, configId } = this.parsePushRefParams(params, true);
       this.requireTask(taskId);
@@ -330,7 +366,7 @@ export class A2AServer {
       if (byId.size === 0) {
         this.pushConfigs.delete(taskId);
       }
-      return isV1Method(request.method) ? {} : null;
+      return isV1Dialect(request.method, context) ? {} : null;
     });
   }
 
@@ -613,9 +649,12 @@ export class A2AServer {
     return { taskId, configId: configId as string | undefined };
   }
 
-  /** 0.3 methods return the nested shape; 1.0 aliases return the flattened one. */
-  private shapePushConfig(entry: TaskPushNotificationConfig, method: string): unknown {
-    if (!isV1Method(method)) return entry;
+  /**
+   * 0.3 returns the nested shape; the 1.0 dialect (negotiated version or a
+   * PascalCase method name) returns the flattened one.
+   */
+  private shapePushConfig(entry: TaskPushNotificationConfig, method: string, context: A2AMethodContext): unknown {
+    if (!isV1Dialect(method, context)) return entry;
     return { taskId: entry.taskId, ...entry.pushNotificationConfig };
   }
 
@@ -643,11 +682,20 @@ export class A2AServer {
     if (!byId || byId.size === 0 || !this.pushNotificationsEnabled) return;
     const fetchImpl = this.pushOptions.fetch ?? globalThis.fetch;
     const timeoutMs = this.pushOptions.timeoutMs ?? DEFAULT_PUSH_TIMEOUT_MS;
-    const body = JSON.stringify(task);
+    // 0.3 subscribers get the bare Task; 1.0 subscribers get a StreamResponse
+    // (`{ task }`) as application/a2a+json (spec 4.3.3).
+    const legacyBody = JSON.stringify(task);
+    let v1Body: string | undefined;
 
     for (const config of byId.values()) {
       const entry: TaskPushNotificationConfig = { taskId: task.id, pushNotificationConfig: config };
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const v1 = this.pushConfigVersions.get(config) === '1.0';
+      if (v1 && v1Body === undefined) v1Body = JSON.stringify({ task: toV1Task(task) });
+      const body = v1 ? (v1Body as string) : legacyBody;
+      const headers: Record<string, string> = {
+        'Content-Type': v1 ? A2A_JSON_MEDIA_TYPE : 'application/json',
+        [A2A_VERSION_HEADER]: v1 ? '1.0' : '0.3',
+      };
       if (config.token) headers['X-A2A-Notification-Token'] = config.token;
       const auth = config.authentication;
       if (auth?.credentials && auth.schemes.some((s) => s.toLowerCase() === 'bearer')) {
@@ -830,6 +878,41 @@ export class A2AServer {
       return;
     }
 
+    // Negotiate the wire dialect (spec 3.6). The header wins; the query
+    // parameter form is accepted as well. Resolved before structural
+    // validation so even a malformed request is answered in its dialect.
+    let protocolVersion: A2AProtocolVersion;
+    try {
+      protocolVersion = resolveProtocolVersion(
+        req.headers[A2A_VERSION_HEADER.toLowerCase()] ?? this.versionQueryParam(req.url),
+      );
+    } catch (err) {
+      const requested = err instanceof UnsupportedProtocolVersionError ? err.requested : 'unknown';
+      const id = this.readableId(request);
+      this.sendJsonRpcError(
+        res,
+        id,
+        VERSION_NOT_SUPPORTED,
+        `The requested A2A protocol version ${requested} is not supported by this agent`,
+        [
+          {
+            '@type': ERROR_INFO_TYPE,
+            reason: 'VERSION_NOT_SUPPORTED',
+            domain: ERROR_INFO_DOMAIN,
+            metadata: {
+              requestedVersion: requested,
+              supportedVersions: A2A_SUPPORTED_PROTOCOL_VERSIONS.join(','),
+            },
+          },
+        ],
+        { [A2A_VERSION_HEADER]: A2A_SUPPORTED_PROTOCOL_VERSIONS[0] },
+      );
+      return;
+    }
+    const context: A2AMethodContext = { protocolVersion };
+    const project = protocolVersion === '1.0';
+    const responseHeaders = { [A2A_VERSION_HEADER]: protocolVersion };
+
     // Validate JSON-RPC structure (ids may be strings or numbers, including 0)
     const hasId =
       request !== null &&
@@ -841,6 +924,9 @@ export class A2AServer {
         hasId ? request.id : null,
         INVALID_REQUEST,
         'Invalid JSON-RPC 2.0 request: missing jsonrpc, id, or method',
+        undefined,
+        responseHeaders,
+        project,
       );
       return;
     }
@@ -855,29 +941,40 @@ export class A2AServer {
           request.id,
           UNSUPPORTED_OPERATION,
           `${request.method} is not supported: this agent does not stream (capabilities.streaming is false)`,
+          undefined,
+          responseHeaders,
+          project,
         );
         return;
       }
-      this.sendJsonRpcError(res, request.id, METHOD_NOT_FOUND, `Method not found: ${request.method}`);
+      this.sendJsonRpcError(
+        res,
+        request.id,
+        METHOD_NOT_FOUND,
+        `Method not found: ${request.method}`,
+        undefined,
+        responseHeaders,
+        project,
+      );
       return;
     }
 
     try {
-      const result = await handler(request.params, request);
+      const raw = await handler(request.params, request, context);
       const response: JsonRpcResponse = {
         jsonrpc: '2.0',
         id: request.id,
-        result,
+        result: project ? toV1Result(canonical, raw) : raw,
       };
-      this.sendJson(res, 200, response);
+      this.sendJson(res, 200, response, responseHeaders);
     } catch (err) {
       if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
         // Already a JsonRpcError-shaped object
         const rpcErr = err as JsonRpcError;
-        this.sendJsonRpcError(res, request.id, rpcErr.code, rpcErr.message, rpcErr.data);
+        this.sendJsonRpcError(res, request.id, rpcErr.code, rpcErr.message, rpcErr.data, responseHeaders, project);
       } else {
         const message = err instanceof Error ? err.message : 'Internal error';
-        this.sendJsonRpcError(res, request.id, INTERNAL_ERROR, message);
+        this.sendJsonRpcError(res, request.id, INTERNAL_ERROR, message, undefined, responseHeaders, project);
       }
     }
   }
@@ -888,13 +985,34 @@ export class A2AServer {
     code: number,
     message: string,
     data?: unknown,
+    headers: Record<string, string> = {},
+    v1 = false,
   ): void {
+    const error = rpcError(code, message, data);
     const response: JsonRpcResponse = {
       jsonrpc: '2.0',
       id,
-      error: rpcError(code, message, data),
+      error: v1 ? toV1Error(error) : error,
     };
-    this.sendJson(res, 200, response);
+    this.sendJson(res, 200, response, headers);
+  }
+
+  /** `?A2A-Version=` from the request URL (spec 3.6.1 allows the query form). */
+  private versionQueryParam(rawUrl: string | undefined): string | null {
+    try {
+      return new URL(rawUrl ?? '/', 'http://localhost').searchParams.get(A2A_VERSION_HEADER);
+    } catch {
+      return null;
+    }
+  }
+
+  /** The request id when it is well-formed, else null. */
+  private readableId(request: unknown): JsonRpcId | null {
+    if (request && typeof request === 'object') {
+      const id = (request as { id?: unknown }).id;
+      if (typeof id === 'string' || typeof id === 'number') return id;
+    }
+    return null;
   }
 
   private readBody(req: IncomingMessage): Promise<string> {
@@ -906,12 +1024,21 @@ export class A2AServer {
     });
   }
 
-  private sendJson(res: ServerResponse, status: number, data: unknown): void {
+  private sendJson(
+    res: ServerResponse,
+    status: number,
+    data: unknown,
+    headers: Record<string, string> = {},
+  ): void {
     const body = JSON.stringify(data);
-    res.writeHead(status, {
+    const all: Record<string, string | number> = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
-    });
+      ...headers,
+    };
+    // Responses differ by negotiated dialect, so caches must key on it.
+    if (A2A_VERSION_HEADER in headers) all.Vary = A2A_VERSION_HEADER;
+    res.writeHead(status, all);
     res.end(body);
   }
 }
@@ -921,6 +1048,15 @@ export class A2AServer {
 /** True for A2A 1.0 PascalCase method names. */
 function isV1Method(method: string): boolean {
   return method in A2A_V1_METHOD_ALIASES;
+}
+
+/**
+ * True when a response should take the 1.0 shape: the client negotiated
+ * `A2A-Version: 1.0`, or it called a 1.0 PascalCase method name (kept for
+ * callers that adopted the aliases before version negotiation existed).
+ */
+function isV1Dialect(method: string, context: A2AMethodContext): boolean {
+  return context.protocolVersion === '1.0' || isV1Method(method);
 }
 
 /**

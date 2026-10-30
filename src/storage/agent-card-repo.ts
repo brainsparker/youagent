@@ -7,6 +7,7 @@ import type { AgentCard } from '../types/agent-card.js';
 import {
   A2A_BINDING_JSONRPC,
   A2A_JSONRPC_PROTOCOL_VERSION,
+  A2A_JSONRPC_LEGACY_PROTOCOL_VERSION,
   isYouAgent,
   getAgentIdentifier,
   getEffectiveInterests,
@@ -43,10 +44,15 @@ function rowToAgentCard(row: AgentCardRow): AgentCard {
         protocolBinding: A2A_BINDING_JSONRPC,
         protocolVersion: A2A_JSONRPC_PROTOCOL_VERSION,
       },
+      {
+        url: LOCAL_A2A_URL,
+        protocolBinding: A2A_BINDING_JSONRPC,
+        protocolVersion: A2A_JSONRPC_LEGACY_PROTOCOL_VERSION,
+      },
     ],
     url: LOCAL_A2A_URL,
     version: '0.1.0',
-    protocolVersion: A2A_JSONRPC_PROTOCOL_VERSION,
+    protocolVersion: A2A_JSONRPC_LEGACY_PROTOCOL_VERSION,
     capabilities: row.capabilities ? JSON.parse(row.capabilities) : {
       streaming: false,
       pushNotifications: false,

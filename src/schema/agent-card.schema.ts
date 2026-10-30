@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import {
   A2A_BINDING_JSONRPC,
+  A2A_JSONRPC_LEGACY_PROTOCOL_VERSION,
   A2A_JSONRPC_PROTOCOL_VERSION,
   normalizeAgentCard,
   type A2ASecurityScheme,
@@ -224,8 +225,11 @@ export type AgentCardOutput = z.output<typeof agentCardObjectSchema>;
 // ---------------------------------------------------------------------------
 
 /**
- * Build the transitional endpoint declaration for a JSON-RPC agent:
- * a v1.0 `supportedInterfaces` entry plus the legacy top-level fields.
+ * Build the transitional endpoint declaration for a JSON-RPC agent: one
+ * `supportedInterfaces` entry per dialect the server negotiates (1.0 first,
+ * then 0.3, same URL; spec 3.6.2 allows this) plus the legacy top-level
+ * fields, which name the 0.3 dialect because that is what a pre-1.0 reader
+ * will be served.
  */
 function jsonRpcEndpoint(url: string) {
   return {
@@ -235,9 +239,14 @@ function jsonRpcEndpoint(url: string) {
         protocolBinding: A2A_BINDING_JSONRPC,
         protocolVersion: A2A_JSONRPC_PROTOCOL_VERSION,
       },
+      {
+        url,
+        protocolBinding: A2A_BINDING_JSONRPC,
+        protocolVersion: A2A_JSONRPC_LEGACY_PROTOCOL_VERSION,
+      },
     ],
     url,
-    protocolVersion: A2A_JSONRPC_PROTOCOL_VERSION,
+    protocolVersion: A2A_JSONRPC_LEGACY_PROTOCOL_VERSION,
   };
 }
 
